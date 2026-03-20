@@ -26,6 +26,7 @@
 - [Development Plan](#development-plan)
 - [Repository Structure](#repository-structure)
 - [Team](#team)
+- [Adversarial Defense & Anti-Spoofing Strategy](#adversarial-defense--anti-spoofing-strategy)
 - [Business Viability](#business-viability)
 
 ---
@@ -402,6 +403,89 @@ sambal/
 | Aditya Pratap | Frontend + UI/UX |
 | Anshdeep Sharma | ML pipelines + data |
 | Senjuti Chhatait | Research + product strategy |
+
+---
+
+## 🛡️ Adversarial Defense & Anti-Spoofing Strategy
+
+> **Threat scenario:** A coordinated syndicate of delivery workers organizes via Telegram, uses GPS-spoofing apps to fake their location inside a red-alert weather zone, and files mass simultaneous claims to drain the liquidity pool — while sitting safely at home.
+
+Simple GPS verification is not enough. Sambal's defense operates across three layers.
+
+---
+
+### 1. Differentiation — Genuine Worker vs. GPS Spoofer
+
+A real delivery worker caught in a disruption leaves a **coherent digital trail across multiple independent systems simultaneously.** A spoofer can fake GPS coordinates — but they cannot simultaneously fake all of the following:
+
+| Signal | Genuine Stranded Worker | GPS Spoofer |
+|---|---|---|
+| **GPS coordinates** | Inside disruption zone | Spoofed to show inside zone |
+| **Device sensor data** | Accelerometer flat (stationary), no motion | Often shows movement or unnatural stillness |
+| **Network cell tower ID** | Tower physically located in disruption zone | Tower ID from actual home location — mismatches GPS |
+| **Platform app heartbeat** | App reporting online from disruption zone | App may show a different last-known server-ping location |
+| **Delivery history prior 2 hours** | Active deliveries stopping suddenly at disruption onset | No prior delivery activity — was never in the zone |
+| **Battery / charging state** | Often on low battery, outdoor device behaviour | Device often on charge, stationary home pattern |
+| **IP geolocation** | Mobile data IP resolving to disruption area cell node | Home WiFi IP resolving to a different neighbourhood |
+
+**The core ML signal:** Sambal's fraud engine does not rely on GPS alone. It builds a **location coherence score** — a composite of how consistently the worker's GPS, cell tower, IP address, and platform heartbeat *all agree with each other*. A spoofer can align one signal. Aligning four independent signals simultaneously is practically impossible without physical presence.
+
+> **Model:** An ensemble combining rule-based coherence checks with a trained anomaly detector (Isolation Forest) that has learned what a "real disruption signature" looks like across all signals together — not individually.
+
+---
+
+### 2. Data Points — Detecting a Coordinated Fraud Ring
+
+A single spoofed claim is hard to catch. A **ring of 50–500 people spoofing simultaneously** creates unmistakable statistical patterns that Sambal monitors in real time:
+
+**Account-level signals:**
+- Account age < 3 weeks at time of claim
+- Zero completed deliveries on the platform in the 48 hours before the claim
+- Policy purchased within 72 hours of a major weather forecast (opportunistic enrollment)
+- Multiple accounts registered from the same device fingerprint or same home WiFi IP
+
+**Temporal & geographic clustering signals:**
+- Sudden spike in claims from a single zone that is statistically disproportionate to the number of active workers historically registered in that zone
+- Claims filed within a narrow time window (e.g., 80% of claims arrive within 11 minutes of each other — indicative of a coordinated Telegram trigger, not organic individual detection)
+- Workers claiming from Zone X who have **never completed a single delivery in Zone X** in their platform history
+
+**Network graph signals:**
+- Graph analysis of device fingerprints, shared IPs, and phone numbers to surface connected clusters — if 40 claimants all share overlapping registration metadata, that is a ring, not a coincidence
+- Unusual referral patterns: if 30 new accounts were all onboarded via the same referral link in the 5 days before a weather event, the ring likely recruited specifically for the event
+
+**The baseline comparison test:**
+For every major disruption event, Sambal compares the claim rate against the **historical delivery activity rate** for that zone. If Zone 4 typically has 200 active delivery workers during monsoon evenings, but 480 claims arrive for a single event, the excess 280 are automatically escalated for enhanced review — regardless of individual GPS signals.
+
+---
+
+### 3. UX Balance — Protecting Honest Workers from False Flags
+
+This is the most important design constraint. An overly aggressive fraud system that delays or denies genuine claims is worse than a slightly leaky one — it destroys trust among the exact users we are trying to protect.
+
+**The principle:** Default to trust, escalate only on multi-signal evidence.
+
+**Tiered response system:**
+
+| Risk Level | Trigger Condition | Worker Experience |
+|---|---|---|
+| ✅ **Low** | All coherence signals align, no ring patterns, clean history | Auto-approved. Payout in < 10 minutes. No friction. |
+| 🟡 **Medium** | 1–2 weak anomaly signals (e.g., minor cell tower mismatch, first-time claim) | Auto-approved with a **soft flag** logged internally. Worker sees no difference. Reviewed in background. |
+| 🟠 **Elevated** | Multiple weak signals OR account age < 2 weeks | Claim approved but payout held for **2 hours** while an automated secondary check runs. Worker is told: *"Your claim is being processed — you'll receive your payout within 2 hours."* No accusation, no form. |
+| 🔴 **High** | Strong coherence mismatch (GPS vs cell tower conflict) OR part of a detected cluster ring | Claim paused. Worker receives: *"We need a moment to verify your claim. We'll update you within 4 hours."* A human reviewer is notified. |
+
+**Why this works for honest workers in bad weather:**
+
+Bad weather is precisely when network signals degrade. A genuine worker in a flood zone may have:
+- Intermittent GPS signal (phone switching between satellite and network-assisted location)
+- Cell tower handoff as they move to shelter
+- Slow platform heartbeat due to poor connectivity
+
+Sambal accounts for this explicitly. **Signal degradation during a verified weather event lowers — not raises — the suspicion threshold.** The system is calibrated to expect noisy signals in the exact conditions it covers. A GPS hiccup during a Red Alert rainstorm is normal. A GPS hiccup on a clear Tuesday afternoon is suspicious.
+
+**The appeal path:**
+Any worker whose claim is paused receives a simple one-tap appeal option in the app. They can submit one piece of corroborating evidence — a photo, a screenshot of the platform showing no assignments, or a voice note. This is processed within 4 hours. If approved on appeal, the worker receives their payout plus a ₹25 goodwill credit for the inconvenience.
+
+> **Design philosophy:** Sambal treats every flagged worker as innocent until the ring pattern — not the individual — is proven. We penalise coordinated rings. We never penalise connectivity.
 
 ---
 
