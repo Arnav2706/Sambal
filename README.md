@@ -11,25 +11,6 @@
 **Guidewire DEVTrails 2026 · Phase 1 Submission · The Zenithers · SRMIST Chennai**
 
 ----
-
-## 📌 Table of Contents
-
-- [The Problem](#the-problem)
-- [Persona Focus](#persona-focus)
-- [Real-World Scenarios](#real-world-scenarios)
-- [Application Workflow](#application-workflow)
-- [Weekly Premium Model](#weekly-premium-model)
-- [Parametric Triggers](#parametric-triggers)
-- [AI / ML Integration](#ai-ml-integration)
-- [Tech Stack](#tech-stack)
-- [Platform Choice: PWA](#platform-choice-pwa)
-- [Development Plan](#development-plan)
-- [Repository Structure](#repository-structure)
-- [Team](#team)
-- [Adversarial Defense & Anti-Spoofing Strategy](#adversarial-defense--anti-spoofing-strategy)
-- [Business Viability](#business-viability)
-
----
 ## 🚀 Quick Start (Docker Setup)
 
 This project has been fully containerized for seamless evaluation across any operating system.
@@ -63,6 +44,26 @@ This project has been fully containerized for seamless evaluation across any ope
 *Note: For the best experience while testing, utilize the "Demo: Worker" and "Demo: Admin" fast-login buttons on the Authentication page.*
 
 ---
+
+## 📌 Table of Contents
+
+- [The Problem](#the-problem)
+- [Persona Focus](#persona-focus)
+- [Real-World Scenarios](#real-world-scenarios)
+- [Application Workflow](#application-workflow)
+- [Weekly Premium Model](#weekly-premium-model)
+- [Parametric Triggers](#parametric-triggers)
+- [AI / ML Integration](#ai-ml-integration)
+- [Tech Stack](#tech-stack)
+- [Platform Choice: PWA](#platform-choice-pwa)
+- [Development Plan](#development-plan)
+- [Repository Structure](#repository-structure)
+- [Team](#team)
+- [Adversarial Defense & Anti-Spoofing Strategy](#adversarial-defense--anti-spoofing-strategy)
+- [Business Viability](#business-viability)
+
+---
+
 
 ## 🔴 The Problem
 
