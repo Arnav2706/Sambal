@@ -23,7 +23,7 @@ This project has been fully containerized for seamless evaluation across any ope
 
 1. **Clone the repository:**
    ```bash
-   git clone https://github.com/your-username/sambal.git
+   git clone https://github.com/arnav2706/sambal.git
    cd sambal/Sambal-main/Sambal-main
    ```
 
