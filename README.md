@@ -30,6 +30,39 @@
 - [Business Viability](#business-viability)
 
 ---
+## 🚀 Quick Start (Docker Setup)
+
+This project has been fully containerized for seamless evaluation across any operating system.
+
+### Prerequisites
+- [Docker](https://www.docker.com/products/docker-desktop/) installed and running.
+- [Docker Compose](https://docs.docker.com/compose/)
+
+### Running the Platform
+
+1. **Clone the repository:**
+   ```bash
+   git clone https://github.com/your-username/sambal.git
+   cd sambal/Sambal-main/Sambal-main
+   ```
+
+2. **Boot the environment:**
+   ```bash
+   docker-compose up --build
+   ```
+   **This single command will:**
+   - Install all Python Data Science + ML requirements (`xgboost`, `scikit-learn`, `fastapi`).
+   - Spin up the SAMBAL AI Engine Backend on exactly Port 8000.
+   - Install all Node.js requirements for the React frontend.
+   - Spin up the Vite Frontend server on Port 5173.
+
+3. **Access the application:**
+   - **Worker & Admin Dashboard (Frontend):** [http://localhost:5173](http://localhost:5173)
+   - **SAMBAL AI Engine Swagger Docs (Backend):** [http://localhost:8000/docs](http://localhost:8000/docs)
+
+*Note: For the best experience while testing, utilize the "Demo: Worker" and "Demo: Admin" fast-login buttons on the Authentication page.*
+
+---
 
 ## 🔴 The Problem
 
