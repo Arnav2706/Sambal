@@ -1,0 +1,25 @@
+{
+  "users": {
+    "ARNAV@GG": {
+      "id": "W-17420",
+      "name": "ARNAV KUMAR",
+      "email": "ARNAV@GG",
+      "password": "ARNAV",
+      "phone": "9999999999",
+      "platform": "Select Platform",
+      "city": "Select City",
+      "zone": "Select Zone",
+      "persona": "food_delivery",
+      "policyActive": false,
+      "weeklyPremium": 0,
+      "coverageCap": 0,
+      "riskZone": 1,
+      "dailyAvgEarning": 0,
+      "earningsHistory": [],
+      "recentClaims": [],
+      "totalPayouts": 0
+    }
+  },
+  "claims": [],
+  "policies": {}
+}

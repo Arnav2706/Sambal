@@ -67,27 +67,35 @@ def fetch_live_weather(city: str) -> dict:
 
 
 # ─── Load trained SAMBAL AI Model ─────────────────────────────────────────────
-MODEL_PATH = "sambal_ai_v3.pkl"
+import os
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+MODEL_PATH = os.path.join(BASE_DIR, "sambal_ai_v3.pkl")
+
+AI_READY = False
+MODEL_VER = "NOT_TRAINED"
 
 try:
-    with open(MODEL_PATH, "rb") as f:
-        bundle = pickle.load(f)
+    if os.path.exists(MODEL_PATH):
+        with open(MODEL_PATH, "rb") as f:
+            bundle = pickle.load(f)
 
-    m1_risk      = bundle["module1_risk_profiler"]
-    m2_pricer    = bundle["module2_weekly_pricer"]
-    m3_fraud     = bundle["module3_fraud_detector"]
-    m4_trigger   = bundle["module4_trigger_classifier"]
-    m4_conf      = bundle["module4_confidence_scorer"]
-    ZONE_MULT    = bundle["zone_multiplier_map"]
-    PERSONA_MAP  = bundle["persona_map"]
-    CITY_TIER    = bundle["city_tier_map"]
-    MODEL_VER    = bundle["version"]
-    AI_READY     = True
-    print(f"SAMBAL AI {MODEL_VER} loaded — all 4 modules active")
-except FileNotFoundError:
+        m1_risk      = bundle["module1_risk_profiler"]
+        m2_pricer    = bundle["module2_weekly_pricer"]
+        m3_fraud     = bundle["module3_fraud_detector"]
+        m4_trigger   = bundle["module4_trigger_classifier"]
+        m4_conf      = bundle["module4_confidence_scorer"]
+        ZONE_MULT    = bundle["zone_multiplier_map"]
+        PERSONA_MAP  = bundle["persona_map"]
+        CITY_TIER    = bundle["city_tier_map"]
+        MODEL_VER    = bundle["version"]
+        AI_READY     = True
+        print(f"SAMBAL AI {MODEL_VER} loaded successfully from {MODEL_PATH}")
+    else:
+        print(f"WARNING: Model file not found at {MODEL_PATH}")
+except Exception as e:
+    print(f"ERROR loading SAMBAL AI model: {e}")
     AI_READY = False
-    MODEL_VER = "NOT_TRAINED"
-    print("WARNING: sambal_ai_v3.pkl not found. Run train_v3.py first.")
+    MODEL_VER = f"ERROR: {type(e).__name__}"
 
 app = FastAPI(title="SAMBAL AI Engine v2", version="2.0")
 
@@ -224,6 +232,22 @@ def payout_from_trigger(rain, heat, strike, multiplier):
 def status():
     return {"ready": AI_READY, "model": MODEL_VER,
             "modules": ["risk_profiler", "weekly_pricer", "fraud_detector", "trigger_classifier"]}
+
+@app.get("/api/debug/model")
+def debug_model():
+    import os
+    exists = os.path.exists(MODEL_PATH)
+    abs_path = os.path.abspath(MODEL_PATH)
+    cwd = os.getcwd()
+    return {
+        "AI_READY": AI_READY,
+        "MODEL_PATH": MODEL_PATH,
+        "ABS_PATH": abs_path,
+        "EXISTS": exists,
+        "CWD": cwd,
+        "MODEL_VER": MODEL_VER,
+        "FILES_IN_CWD": os.listdir(".")
+    }
 
 
 @app.get("/api/weather/{city}")
