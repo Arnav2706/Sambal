@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { Layout } from '../components/layout/Layout';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/Card';
 import { ShieldAlert, Users, TrendingUp, CheckCircle, Activity, BarChart3, AlertTriangle, Zap, CloudRain, ThermometerSun, Radio, TrendingDown } from 'lucide-react';
@@ -61,6 +61,8 @@ export default function Admin() {
   const [disrupted, setDisrupted]   = useState(false);
   const [simClaims, setSimClaims]   = useState(0);
   const [simPayout, setSimPayout]   = useState(0);
+  const [simLog, setSimLog]         = useState([]);
+  const simLogRef = useRef(null);
 
   const CHENNAI_CENTER = [13.0827, 80.2707];
 
@@ -84,6 +86,17 @@ export default function Admin() {
     return () => clearInterval(interval);
   }, []);
 
+  const SIM_LOG_STEPS = [
+    { ms: 200,  msg: '🛰  Satellite telemetry ingested — rain >52mm detected over Chennai' },
+    { ms: 600,  msg: '🌧  T1 Heavy Rain trigger threshold crossed — Adyar, Velachery, Mylapore' },
+    { ms: 1000, msg: '⚡  Parametric AI activated — T1/T2/T6 triggers firing simultaneously' },
+    { ms: 1400, msg: '📋  Policy registry scanned — 142 active workers in affected zones' },
+    { ms: 1800, msg: '🤖  M4 XGBoost classifier: trigger_valid = TRUE (conf: 94.2%)' },
+    { ms: 2200, msg: '💳  Auto-payout initiated — ₹68,400 queued across 142 claims' },
+    { ms: 2600, msg: '🛡  M3 Fraud detector: 0 anomalies detected in batch' },
+    { ms: 2800, msg: '✅  All claims processed — CRISIS MODE active' },
+  ];
+
   // ─── Disruption Simulator ──────────────────────────────────────────────────
   const handleSimulate = () => {
     if (disrupted) {
@@ -92,16 +105,29 @@ export default function Admin() {
       setSimClaims(0);
       setSimPayout(0);
       setSimProgress(0);
+      setSimLog([]);
       return;
     }
 
     setSimulating(true);
     setSimProgress(0);
+    setSimLog([]);
 
-    // Animate progress bar over ~2.5s
+    // Push log steps at timed intervals
+    SIM_LOG_STEPS.forEach(({ ms, msg }) => {
+      setTimeout(() => {
+        setSimLog(prev => [...prev, msg]);
+        // Auto-scroll log
+        setTimeout(() => {
+          if (simLogRef.current) simLogRef.current.scrollTop = simLogRef.current.scrollHeight;
+        }, 50);
+      }, ms);
+    });
+
+    // Animate progress bar over ~2.8s
     let prog = 0;
     const progInterval = setInterval(() => {
-      prog += 4;
+      prog += 3;
       setSimProgress(Math.min(prog, 100));
       if (prog >= 100) {
         clearInterval(progInterval);
@@ -118,7 +144,7 @@ export default function Admin() {
           if (c >= 142) clearInterval(ticker);
         }, 80);
       }
-    }, 100);
+    }, 84);
   };
 
   const zones = disrupted ? CHENNAI_ZONES_DISRUPTED : CHENNAI_ZONES_NORMAL;
@@ -158,52 +184,85 @@ export default function Admin() {
           </div>
         </div>
 
-        {/* ── Disruption Simulator CTA ── */}
-        <div className={`mb-8 p-5 rounded-2xl border-2 flex flex-col sm:flex-row gap-4 items-center justify-between transition-all duration-500 ${
+        {/* ── Disruption Simulator Panel ── */}
+        <div className={`mb-8 rounded-2xl overflow-hidden border transition-all duration-500 ${
           disrupted
-            ? 'bg-red-50 border-red-200'
-            : 'bg-slate-800 border-slate-700'
+            ? 'border-red-300 shadow-lg shadow-red-100'
+            : 'border-slate-700'
         }`}>
-          <div>
-            <p className={`text-sm font-bold uppercase tracking-wider ${disrupted ? 'text-red-700' : 'text-white'}`}>
-              {disrupted ? '🔴 Disruption Simulation Active' : '⚡ Disruption Engine Simulator'}
-            </p>
-            <p className={`text-xs mt-1 ${disrupted ? 'text-red-500' : 'text-slate-400'}`}>
-              {disrupted
-                ? `${simClaims} claims auto-initiated · ₹${simPayout.toLocaleString()} payout queued — powered by parametric AI`
-                : 'Demo: Simulate a city-wide heavy rain disruption and watch SAMBAL react in real-time'}
-            </p>
+          {/* Dark header bar */}
+          <div className={`px-6 py-5 flex flex-col sm:flex-row gap-4 items-start sm:items-center justify-between transition-colors duration-500 ${
+            disrupted
+              ? 'bg-gradient-to-r from-red-950 to-red-900'
+              : 'bg-gradient-to-r from-slate-900 to-slate-800'
+          }`}>
+            <div className="flex items-start gap-3">
+              <div className={`p-2.5 rounded-xl mt-0.5 ${
+                disrupted ? 'bg-red-500/20 border border-red-500/30' : 'bg-white/10 border border-white/10'
+              }`}>
+                <Zap className={`w-5 h-5 ${disrupted ? 'text-red-400 animate-pulse' : 'text-amber-400'}`} />
+              </div>
+              <div>
+                <p className={`text-sm font-bold tracking-wide ${
+                  disrupted ? 'text-red-300' : 'text-white'
+                }`}>
+                  {disrupted ? '🔴 DISRUPTION SIMULATION — CRISIS MODE ACTIVE' : '⚡ SAMBAL Disruption Engine Simulator'}
+                </p>
+                <p className={`text-xs mt-1 ${
+                  disrupted ? 'text-red-400' : 'text-slate-400'
+                }`}>
+                  {disrupted
+                    ? `${simClaims} claims auto-processed · ₹${simPayout.toLocaleString()} payout queued · T1/T2/T6 triggered`
+                    : 'Simulate a city-wide heavy rain event and watch SAMBAL react autonomously in real-time'}
+                </p>
+              </div>
+            </div>
+            <Button
+              id="simulate-disruption-btn"
+              onClick={handleSimulate}
+              disabled={simulating}
+              className={`shrink-0 font-bold px-5 py-2.5 rounded-xl flex items-center gap-2 transition-all border ${
+                disrupted
+                  ? 'bg-red-600 hover:bg-red-700 text-white border-red-500'
+                  : 'bg-emerald-500 hover:bg-emerald-400 text-white border-emerald-400'
+              }`}
+            >
+              <Zap className="w-4 h-4" />
+              {simulating ? 'Processing...' : disrupted ? 'Reset Simulation' : 'Simulate Disruption'}
+            </Button>
           </div>
-          <Button
-            id="simulate-disruption-btn"
-            onClick={handleSimulate}
-            disabled={simulating}
-            className={`shrink-0 font-bold px-6 py-3 rounded-xl flex items-center gap-2 transition-all ${
-              disrupted
-                ? 'bg-red-600 hover:bg-red-700 text-white'
-                : 'bg-emerald-500 hover:bg-emerald-600 text-white'
-            }`}
-          >
-            <Zap className="w-4 h-4" />
-            {simulating ? 'Simulating...' : disrupted ? 'Reset Simulation' : 'Simulate City-Wide Disruption'}
-          </Button>
-        </div>
 
-        {/* Progress bar during simulation */}
-        {simulating && (
-          <div className="mb-6">
-            <div className="flex justify-between text-xs text-slate-500 mb-1 font-medium">
-              <span>Running SAMBAL Disruption Engine...</span>
-              <span>{simProgress}%</span>
+          {/* Progress bar */}
+          {simulating && (
+            <div className="bg-slate-950 px-6 py-3">
+              <div className="flex justify-between text-[10px] text-slate-400 mb-2 font-mono">
+                <span>⟳ Running SAMBAL parametric engine...</span>
+                <span>{simProgress}%</span>
+              </div>
+              <div className="h-1.5 bg-slate-800 rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-gradient-to-r from-blue-500 via-purple-400 to-red-500 rounded-full transition-all duration-100"
+                  style={{ width: `${simProgress}%` }}
+                />
+              </div>
             </div>
-            <div className="h-2 bg-slate-200 rounded-full overflow-hidden">
-              <div
-                className="h-full bg-gradient-to-r from-blue-500 via-purple-500 to-red-500 rounded-full transition-all duration-100"
-                style={{ width: `${simProgress}%` }}
-              />
+          )}
+
+          {/* Simulation event log */}
+          {(simulating || disrupted) && simLog.length > 0 && (
+            <div
+              ref={simLogRef}
+              className="bg-slate-950 border-t border-white/5 px-6 py-3 max-h-36 overflow-y-auto"
+            >
+              {simLog.map((line, i) => (
+                <p key={i} className="text-[11px] font-mono text-slate-400 leading-relaxed py-0.5 border-b border-white/5 last:border-0">
+                  <span className="text-slate-600 mr-2 select-none">{String(i + 1).padStart(2, '0')} ›</span>
+                  {line}
+                </p>
+              ))}
             </div>
-          </div>
-        )}
+          )}
+        </div>
 
         {/* ── KPI Row ── */}
         <div className="grid grid-cols-2 md:grid-cols-6 gap-4 mb-8">

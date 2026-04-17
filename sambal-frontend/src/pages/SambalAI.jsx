@@ -1,17 +1,55 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   ShieldCheck, AlertTriangle, Play, Loader2, Sparkles,
   CloudRain, Thermometer, Wind, MapPin, CheckCircle, XCircle,
-  RefreshCw, Wifi, WifiOff
+  RefreshCw, Wifi, WifiOff, ChevronDown, Search
 } from 'lucide-react';
 import { Layout } from '../components/layout/Layout';
 import { Card, CardContent } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
 
 const PERSONAS  = ["food_delivery", "grocery", "ride_hailing", "logistics"];
-const CITIES    = ["Mumbai", "Delhi", "Bangalore", "Chennai", "Hyderabad", "Kolkata", "Pune"];
 const PLATFORMS = ["Swiggy", "Zomato", "Blinkit", "Rapido", "Uber", "Porter"];
+
+function getDistanceKm(lat1, lon1, lat2, lon2) {
+  const R = 6371;
+  const dLat = (lat2 - lat1) * (Math.PI / 180);
+  const dLon = (lon2 - lon1) * (Math.PI / 180);
+  const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+            Math.cos(lat1 * (Math.PI / 180)) * Math.cos(lat2 * (Math.PI / 180)) *
+            Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+}
+
+// Search cities using Open-Meteo Geocoding API
+async function geocodeCity(query) {
+  const res = await fetch(
+    `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(query)}&count=6&language=en&format=json`
+  );
+  const data = await res.json();
+  return (data.results || []).map(r => ({
+    name: r.name,
+    country: r.country,
+    admin1: r.admin1, // state/province
+    lat: r.latitude,
+    lon: r.longitude,
+  }));
+}
+
+// Reverse geocode GPS coords to city name using Nominatim
+async function reverseGeocode(lat, lon) {
+  const res = await fetch(
+    `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&format=json`,
+    { headers: { 'Accept-Language': 'en' } }
+  );
+  const data = await res.json();
+  const addr = data.address || {};
+  // Use city > town > village > county fallback
+  const cityName = addr.city || addr.town || addr.village || addr.county || addr.state_district || addr.state || 'Unknown';
+  return { cityName, lat: parseFloat(data.lat), lon: parseFloat(data.lon) };
+}
 
 export default function SambalAI() {
   const [loading, setLoading]         = useState(false);
@@ -19,7 +57,17 @@ export default function SambalAI() {
   const [result, setResult]           = useState(null);
   const [liveWeather, setLiveWeather] = useState(null);
   const [weatherError, setWeatherError] = useState(false);
+  const [gpsStatus, setGpsStatus]     = useState('idle'); // idle, locating, verified, out_of_zone, denied
+  const [gpsCity, setGpsCity]         = useState(null); // the city auto-detected from GPS
   const [liveTime, setLiveTime]       = useState(new Date());
+  const [citySearch, setCitySearch]   = useState('');
+  const [cityDropOpen, setCityDropOpen] = useState(false);
+  const [cityResults, setCityResults] = useState([]);   // geocoded search results
+  const [citySearching, setCitySearching] = useState(false);
+  const [gpsCoords, setGpsCoords]     = useState(null); // {lat, lon} of user's GPS
+  const [selectedCityCoords, setSelectedCityCoords] = useState(null); // {lat, lon} of chosen city
+  const cityDropRef = useRef(null);
+  const searchTimerRef = useRef(null);
 
   const [formData, setFormData] = useState({
     city:            'Mumbai',
@@ -32,19 +80,40 @@ export default function SambalAI() {
     manual_heat:     30,
   });
 
-  const [inputCity, setInputCity] = useState(formData.city);
-
-  useEffect(() => {
-    setInputCity(formData.city);
-  }, [formData.city]);
-
-  const handleCitySubmit = () => {
-    if (inputCity.trim() && inputCity.trim() !== formData.city) {
-      update('city', inputCity.trim());
-    }
-  };
-
   const update = (key, val) => setFormData(p => ({ ...p, [key]: val }));
+
+  // Debounced geocoding search when user types in city dropdown
+  useEffect(() => {
+    if (!citySearch.trim() || citySearch.length < 2) {
+      setCityResults([]);
+      return;
+    }
+    clearTimeout(searchTimerRef.current);
+    setCitySearching(true);
+    searchTimerRef.current = setTimeout(async () => {
+      try {
+        const results = await geocodeCity(citySearch);
+        setCityResults(results);
+      } catch {
+        setCityResults([]);
+      } finally {
+        setCitySearching(false);
+      }
+    }, 400); // 400ms debounce
+    return () => clearTimeout(searchTimerRef.current);
+  }, [citySearch]);
+
+  // Close city dropdown when clicking outside
+  useEffect(() => {
+    const handler = (e) => {
+      if (cityDropRef.current && !cityDropRef.current.contains(e.target)) {
+        setCityDropOpen(false);
+        setCitySearch('');
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, []);
 
   // Live clock — ticks every second
   useEffect(() => {
@@ -57,12 +126,78 @@ export default function SambalAI() {
     fetchWeather(formData.city);
   }, [formData.city]);
 
+  // Handle GPS location tracking + auto city detection (reverse geocoding)
+  useEffect(() => {
+    if (formData.test_mode) {
+      setGpsStatus('idle');
+      setGpsCity(null);
+      setGpsCoords(null);
+      return;
+    }
+
+    setGpsStatus('locating');
+    if (!navigator.geolocation) {
+      setGpsStatus('denied');
+      update('zone_match', false);
+      return;
+    }
+
+    navigator.geolocation.getCurrentPosition(
+      async (pos) => {
+        const { latitude, longitude } = pos.coords;
+        setGpsCoords({ lat: latitude, lon: longitude });
+
+        try {
+          // Reverse geocode to get real city name
+          const { cityName } = await reverseGeocode(latitude, longitude);
+          setGpsCity(cityName);
+          // Auto-set city name and coords = GPS location itself (distance = 0)
+          update('city', cityName);
+          setSelectedCityCoords({ lat: latitude, lon: longitude });
+          setGpsStatus('verified');
+          update('zone_match', true);
+        } catch {
+          setGpsStatus('denied');
+          setGpsCity(null);
+          update('zone_match', false);
+        }
+      },
+      (err) => {
+        console.warn('GPS Error', err);
+        setGpsStatus('denied');
+        setGpsCity(null);
+        setGpsCoords(null);
+        update('zone_match', false);
+      },
+      { timeout: 10000, maximumAge: 60000 }
+    );
+  }, [formData.test_mode]);
+
+  // When user manually selects a city, re-evaluate zone_match against GPS coords
+  useEffect(() => {
+    if (formData.test_mode || gpsStatus === 'idle' || gpsStatus === 'locating' || gpsStatus === 'denied') return;
+    if (!gpsCoords || !selectedCityCoords) return;
+    const dist = getDistanceKm(gpsCoords.lat, gpsCoords.lon, selectedCityCoords.lat, selectedCityCoords.lon);
+    if (dist <= 80) {
+      setGpsStatus('verified');
+      update('zone_match', true);
+    } else {
+      setGpsStatus('out_of_zone');
+      update('zone_match', false);
+    }
+  }, [selectedCityCoords]);
+
   const fetchWeather = async (city) => {
     setWeatherLoading(true);
     setWeatherError(false);
     setLiveWeather(null);
     try {
-      const res = await fetch(`http://127.0.0.1:8000/api/weather/${city}`);
+      const url = new URL(`http://127.0.0.1:8000/api/weather/${city}`);
+      if (gpsCoords && !formData.test_mode) {
+        url.searchParams.append('lat', gpsCoords.lat);
+        url.searchParams.append('lon', gpsCoords.lon);
+      }
+      const res = await fetch(url);
       if (!res.ok) throw new Error();
       const data = await res.json();
       setLiveWeather(data);
@@ -77,23 +212,36 @@ export default function SambalAI() {
     setLoading(true);
     setResult(null);
     try {
+      const payload = {
+        ...formData,
+        strike_severity: Number(formData.strike_severity),
+        manual_rain:     formData.test_mode ? Number(formData.manual_rain) : null,
+        manual_heat:     formData.test_mode ? Number(formData.manual_heat) : null,
+      };
+
+      // Add GPS coords for precision if available and not in manual test mode
+      if (gpsCoords && !formData.test_mode) {
+        payload.lat = gpsCoords.lat;
+        payload.lon = gpsCoords.lon;
+      }
+
       const response = await fetch('http://127.0.0.1:8000/api/live-analysis', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          ...formData,
-          strike_severity: Number(formData.strike_severity),
-          manual_rain:     formData.test_mode ? Number(formData.manual_rain) : null,
-          manual_heat:     formData.test_mode ? Number(formData.manual_heat) : null,
-        }),
+        body:    JSON.stringify(payload),
       });
-      if (!response.ok) throw new Error(`API Error: ${response.status}`);
+
+      if (!response.ok) {
+        const errorBody = await response.json().catch(() => ({}));
+        throw new Error(errorBody.detail || `Server Error: ${response.status}`);
+      }
+
       const data = await response.json();
       setTimeout(() => { setResult(data); setLoading(false); }, 1000);
     } catch (err) {
       console.error(err);
       setLoading(false);
-      alert('Failed to connect to SAMBAL AI Backend. Make sure main_v2.py is running on port 8000.');
+      alert(`Backend Error: ${err.message}\n\nCheck if the backend terminal shows any Python errors.`);
     }
   };
 
@@ -251,19 +399,94 @@ export default function SambalAI() {
 
                 {/* City + Platform */}
                 <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="flex items-center justify-between block text-xs font-bold text-slate-600 uppercase tracking-wider mb-1.5">
-                      <span>City Search</span>
-                      <span className="text-[9px] text-slate-400 font-normal normal-case px-1 bg-slate-100 rounded">Press Enter</span>
+                  {/* City searchable dropdown */}
+                  <div ref={cityDropRef} className="relative">
+                    <label className="flex items-center justify-between text-xs font-bold text-slate-600 uppercase tracking-wider mb-1.5">
+                      <span>City</span>
+                      {!formData.test_mode && gpsStatus === 'locating' && (
+                        <span className="text-[9px] text-slate-400 font-normal normal-case flex items-center gap-1">
+                          <Loader2 className="w-2.5 h-2.5 animate-spin"/> Auto-detecting
+                        </span>
+                      )}
+                      {!formData.test_mode && gpsStatus === 'verified' && (
+                        <span className="text-[9px] text-emerald-600 font-semibold normal-case flex items-center gap-1">
+                          <MapPin className="w-2.5 h-2.5"/> GPS Auto-set
+                        </span>
+                      )}
                     </label>
-                    <input type="text"
-                      className="w-full bg-white border border-slate-200 text-slate-700 rounded-lg px-3 py-2.5 text-sm outline-none focus:border-primary-500 focus:ring-1 focus:ring-primary-500"
-                      value={inputCity}
-                      onChange={e => setInputCity(e.target.value)}
-                      onBlur={handleCitySubmit}
-                      onKeyDown={e => e.key === 'Enter' && handleCitySubmit()}
-                      placeholder="e.g. Mumbai, Tokyo, London..."
-                    />
+                    <button
+                      type="button"
+                      onClick={() => { setCityDropOpen(v => !v); setCitySearch(''); }}
+                      className="w-full bg-white border border-slate-200 text-slate-700 rounded-lg px-3 py-2.5 text-sm flex items-center justify-between hover:border-slate-300 focus:outline-none focus:border-primary-500"
+                    >
+                      <span className="flex items-center gap-1.5">
+                        <MapPin className="w-3.5 h-3.5 text-slate-400"/>
+                        {formData.city}
+                      </span>
+                      <ChevronDown className={`w-4 h-4 text-slate-400 transition-transform ${cityDropOpen ? 'rotate-180' : ''}`}/>
+                    </button>
+                    <AnimatePresence>
+                      {cityDropOpen && (
+                        <motion.div
+                          initial={{ opacity: 0, y: -4 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          exit={{ opacity: 0, y: -4 }}
+                          transition={{ duration: 0.15 }}
+                          className="absolute z-50 mt-1 w-full bg-white border border-slate-200 rounded-xl shadow-lg overflow-hidden"
+                        >
+                          <div className="p-2 border-b border-slate-100">
+                            <div className="flex items-center gap-2 bg-slate-50 rounded-lg px-2 py-1.5">
+                              <Search className="w-3.5 h-3.5 text-slate-400"/>
+                              <input
+                                autoFocus
+                                type="text"
+                                className="flex-1 text-sm bg-transparent outline-none text-slate-700 placeholder:text-slate-400"
+                                placeholder="Search city..."
+                                value={citySearch}
+                                onChange={e => setCitySearch(e.target.value)}
+                              />
+                            </div>
+                          </div>
+                          <ul className="max-h-48 overflow-y-auto py-1">
+                            {citySearching && (
+                              <li className="px-3 py-3 text-sm text-slate-400 text-center flex items-center justify-center gap-2">
+                                <Loader2 className="w-3.5 h-3.5 animate-spin"/> Searching...
+                              </li>
+                            )}
+                            {!citySearching && citySearch.length >= 2 && cityResults.length === 0 && (
+                              <li className="px-3 py-3 text-sm text-slate-400 text-center">No cities found</li>
+                            )}
+                            {!citySearching && citySearch.length < 2 && (
+                              <li className="px-3 py-3 text-sm text-slate-400 text-center">Type to search any city...</li>
+                            )}
+                            {!citySearching && cityResults.map((c, i) => (
+                              <li key={i}>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    update('city', c.name);
+                                    setSelectedCityCoords({ lat: c.lat, lon: c.lon });
+                                    setCityDropOpen(false);
+                                    setCitySearch('');
+                                    setCityResults([]);
+                                  }}
+                                  className={`w-full text-left px-3 py-2 text-sm flex items-center gap-2 hover:bg-slate-50 transition ${
+                                    formData.city === c.name ? 'text-primary-900 font-semibold bg-primary-50' : 'text-slate-700'
+                                  }`}
+                                >
+                                  <MapPin className="w-3 h-3 text-slate-300 shrink-0"/>
+                                  <span className="flex-1 min-w-0">
+                                    <span className="block font-medium truncate">{c.name}</span>
+                                    <span className="block text-[10px] text-slate-400 truncate">{[c.admin1, c.country].filter(Boolean).join(', ')}</span>
+                                  </span>
+                                  {formData.city === c.name && <CheckCircle className="w-3 h-3 text-primary-900 ml-auto shrink-0"/>}
+                                </button>
+                              </li>
+                            ))}
+                          </ul>
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
                   </div>
                   <div>
                     <label className="block text-xs font-bold text-slate-600 uppercase tracking-wider mb-1.5">Platform</label>
@@ -301,29 +524,56 @@ export default function SambalAI() {
                 {/* Zone Match */}
                 <div className="rounded-xl border border-slate-200 bg-slate-50 overflow-hidden">
                   <div className="flex items-center justify-between px-4 py-3">
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-1 items-center gap-2">
                       <MapPin className="w-4 h-4 text-slate-500 shrink-0"/>
                       <div>
                         <p className="text-sm font-semibold text-slate-700">Worker in Disruption Zone</p>
                         <p className="text-[10px] text-slate-400 leading-tight mt-0.5">
-                          Worker's GPS overlaps with the area affected by rain/strike
+                          {!formData.test_mode && gpsCity
+                            ? `GPS detected: ${gpsCity} — verified only for your actual location`
+                            : "Worker's GPS overlaps with the area affected by rain/strike"}
                         </p>
                       </div>
                     </div>
-                    {/* Toggle */}
-                    <button
-                      type="button"
-                      role="switch"
-                      aria-checked={formData.zone_match}
-                      onClick={() => update('zone_match', !formData.zone_match)}
-                      className={`relative inline-flex h-7 w-14 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${formData.zone_match ? 'bg-emerald-500' : 'bg-slate-300'}`}
-                    >
-                      <span
-                        className={`pointer-events-none inline-block h-6 w-6 transform rounded-full bg-white shadow-md ring-0 transition-transform duration-200 ease-in-out ${formData.zone_match ? 'translate-x-7' : 'translate-x-0'}`}
-                      />
-                    </button>
+                    {/* Toggle / Status */}
+                    {formData.test_mode ? (
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-checked={formData.zone_match}
+                        onClick={() => update('zone_match', !formData.zone_match)}
+                        className={`relative inline-flex h-7 w-14 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${formData.zone_match ? 'bg-emerald-500' : 'bg-slate-300'}`}
+                      >
+                        <span
+                          className={`pointer-events-none inline-block h-6 w-6 transform rounded-full bg-white shadow-md ring-0 transition-transform duration-200 ease-in-out ${formData.zone_match ? 'translate-x-7' : 'translate-x-0'}`}
+                        />
+                      </button>
+                    ) : (
+                      <div className="text-right pl-2">
+                        {gpsStatus === 'locating' && <span className="text-xs font-bold text-slate-500 flex items-center gap-1 justify-end"><Loader2 className="w-3 h-3 animate-spin"/> Locating...</span>}
+                        {gpsStatus === 'verified' && <span className="text-xs font-bold text-emerald-600 flex items-center gap-1 justify-end"><CheckCircle className="w-3 h-3"/> Verified</span>}
+                        {gpsStatus === 'out_of_zone' && <span className="text-xs font-bold text-rose-600 flex items-center gap-1 justify-end"><XCircle className="w-3 h-3"/> Out of Zone</span>}
+                        {gpsStatus === 'denied' && <span className="text-xs font-bold text-rose-600 flex items-center gap-1 justify-end"><AlertTriangle className="w-3 h-3"/> GPS Denied</span>}
+                      </div>
+                    )}
                   </div>
-                  {!formData.zone_match && (
+                  {/* Context messages */}
+                  {!formData.test_mode && gpsStatus === 'out_of_zone' && gpsCity && formData.city !== gpsCity && (
+                    <div className="px-4 py-2 bg-amber-50 border-t border-amber-100 text-[10px] text-amber-700 font-medium">
+                      ⚠ Your GPS is in <strong>{gpsCity}</strong> — select it to get zone verified
+                    </div>
+                  )}
+                  {!formData.test_mode && gpsStatus === 'out_of_zone' && formData.city === gpsCity && (
+                    <div className="px-4 py-2 bg-amber-50 border-t border-amber-100 text-[10px] text-amber-700 font-medium">
+                      ⚠ Zone mismatch — you are more than 80km from {gpsCity}
+                    </div>
+                  )}
+                  {!formData.test_mode && gpsStatus === 'denied' && (
+                    <div className="px-4 py-2 bg-rose-50 border-t border-rose-100 text-[10px] text-rose-700 font-medium">
+                      ⚠ Location access denied — enable GPS permissions to verify zone
+                    </div>
+                  )}
+                  {formData.test_mode && !formData.zone_match && (
                     <div className="px-4 py-2 bg-amber-50 border-t border-amber-100 text-[10px] text-amber-700 font-medium">
                       ⚠ Zone mismatch — payout will be rejected regardless of weather severity
                     </div>
@@ -400,18 +650,12 @@ export default function SambalAI() {
                         </div>
                       </div>
 
-                      {/* Metrics */}
-                      <div className="grid grid-cols-2 gap-4">
-                        <div className="bg-white/5 border border-white/10 rounded-xl p-4">
-                          <p className="text-xs font-medium text-slate-400 uppercase tracking-wider mb-1">Confidence</p>
-                          <p className="text-3xl font-black text-white">{(result.confidence_score*100).toFixed(0)}%</p>
-                        </div>
-                        <div className="bg-white/5 border border-white/10 rounded-xl p-4">
-                          <p className="text-xs font-medium text-slate-400 uppercase tracking-wider mb-1">Payout</p>
-                          <p className={`text-3xl font-black ${result.estimated_payout_inr > 0 ? 'text-accent-400' : 'text-slate-500'}`}>
-                            {result.estimated_payout_inr > 0 ? `₹${result.estimated_payout_inr}` : '₹0'}
-                          </p>
-                        </div>
+                      {/* Payout */}
+                      <div className="bg-white/5 border border-white/10 rounded-xl p-4">
+                        <p className="text-xs font-medium text-slate-400 uppercase tracking-wider mb-1">Estimated Payout</p>
+                        <p className={`text-3xl font-black ${result.estimated_payout_inr > 0 ? 'text-accent-400' : 'text-slate-500'}`}>
+                          {result.estimated_payout_inr > 0 ? `₹${result.estimated_payout_inr}` : '₹0'}
+                        </p>
                       </div>
 
                       {/* Risk factors */}
