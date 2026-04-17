@@ -739,13 +739,15 @@ def create_policy(req: PolicyCreateRequest):
         "worker_id": user["id"],
         "plan": req.plan,
         "weekly_premium": req.weeklyPremium,
+        "premium_collected_inr": req.weeklyPremium * 4,
         "coverage_cap": req.coverageCap,
         "payout_rate": 80,
         "risk_zone": req.riskZone,
         "zone_multiplier": req.zoneMultiplier,
         "active_triggers": ["T1", "T2", "T3", "T4", "T5", "T6"],
         "renewal_day": "Next Monday",
-        "status": "ACTIVE"
+        "status": "ACTIVE",
+        "created_at": datetime.datetime.now().isoformat(),
     }
     save_db(db)
     return {"status": "success", "user": user, "policy": db["policies"][user["id"]]}
@@ -819,48 +821,169 @@ class ClaimSubmitRequest(BaseModel):
     aqi: float = 100.0
 
 
-def compute_gps_coherence(gps_lat: float, gps_lon: float) -> dict:
-    """Advanced fraud detection: GPS spoofing detection via multi-signal location coherence scoring.
-    Simulates checking GPS vs cell tower, IP geolocation, and platform heartbeat.
-    Returns a coherence score (0-1) where <0.7 indicates likely GPS spoofing."""
-    # In production: real cell tower, IP geo, platform heartbeat
-    # For demo: deterministic simulation based on lat/lon characteristics
-    base_score = 0.92
-    # Small jitter to make it realistic for repeated calls
-    jitter = round(random.uniform(-0.05, 0.05), 3)
-    score = round(min(1.0, max(0.4, base_score + jitter)), 3)
+def resolve_city_coords(city: str) -> tuple[float, float]:
+    if city in CITY_COORDS:
+        return CITY_COORDS[city]
 
-    cell_tower_match   = score > 0.75
-    ip_geo_match       = score > 0.70
-    platform_ping_match = score > 0.80
+    geo_url = f"https://geocoding-api.open-meteo.com/v1/search?name={city}&count=1"
+    geo_resp = req_lib.get(geo_url, timeout=4)
+    geo_resp.raise_for_status()
+    geo_data = geo_resp.json()
+    if "results" not in geo_data or not geo_data["results"]:
+        raise ValueError(f"Unable to resolve coordinates for {city}")
+
+    result = geo_data["results"][0]
+    return float(result["latitude"]), float(result["longitude"])
+
+
+def compute_distance_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    radius_km = 6371.0
+    lat1_rad, lon1_rad = math.radians(lat1), math.radians(lon1)
+    lat2_rad, lon2_rad = math.radians(lat2), math.radians(lon2)
+    d_lat = lat2_rad - lat1_rad
+    d_lon = lon2_rad - lon1_rad
+    a = (
+        math.sin(d_lat / 2) ** 2
+        + math.cos(lat1_rad) * math.cos(lat2_rad) * math.sin(d_lon / 2) ** 2
+    )
+    return round(2 * radius_km * math.atan2(math.sqrt(a), math.sqrt(1 - a)), 3)
+
+
+def parse_claim_datetime(claim: dict) -> Optional[datetime.datetime]:
+    created_at = claim.get("created_at")
+    if created_at:
+        try:
+            return datetime.datetime.fromisoformat(created_at)
+        except ValueError:
+            pass
+
+    claim_date = claim.get("date")
+    if claim_date:
+        try:
+            return datetime.datetime.strptime(claim_date, "%d %b %Y")
+        except ValueError:
+            return None
+    return None
+
+
+def get_worker_record(worker_id: str) -> dict:
+    for user_data in db["users"].values():
+        if user_data["id"] == worker_id:
+            return user_data
+    return {}
+
+
+def get_recent_claims(worker_id: str, days: int = 7) -> list[dict]:
+    cutoff = datetime.datetime.now() - datetime.timedelta(days=days)
+    recent = []
+    for claim in db["claims"]:
+        if claim.get("worker_id") != worker_id:
+            continue
+        claim_dt = parse_claim_datetime(claim)
+        if claim_dt and claim_dt >= cutoff:
+            recent.append(claim)
+    return recent
+
+
+def estimate_cross_worker_match(city: str, trigger_id: str, submitted_at: datetime.datetime, worker_id: str) -> float:
+    window_start = submitted_at - datetime.timedelta(hours=48)
+    matching = 0
+    unique_workers = set()
+
+    for claim in db["claims"]:
+        if claim.get("worker_id") == worker_id:
+            continue
+        claim_dt = parse_claim_datetime(claim)
+        if not claim_dt or claim_dt < window_start:
+            continue
+        if claim.get("city") == city and claim.get("event") == trigger_id:
+            matching += 1
+            unique_workers.add(claim.get("worker_id"))
+
+    cluster_size = matching + len(unique_workers)
+    return round(min(1.0, cluster_size / 6.0), 3)
+
+
+def estimate_duplicate_claim(worker_id: str, trigger_id: str, rain_mm: float, submitted_at: datetime.datetime) -> bool:
+    recent_worker_claims = get_recent_claims(worker_id, days=2)
+    for claim in recent_worker_claims:
+        claim_dt = parse_claim_datetime(claim)
+        if not claim_dt:
+            continue
+        if abs((submitted_at - claim_dt).total_seconds()) > 24 * 3600:
+            continue
+        if claim.get("event") == trigger_id and abs(float(claim.get("rain_mm", 0)) - rain_mm) <= 8:
+            return True
+    return False
+
+
+def estimate_premium_collected(policy: dict) -> int:
+    explicit_collected = policy.get("premium_collected_inr")
+    if explicit_collected is not None:
+        return int(explicit_collected)
+
+    weekly_premium = int(policy.get("weekly_premium", 0))
+    created_at = policy.get("created_at")
+    if created_at:
+        try:
+            created_dt = datetime.datetime.fromisoformat(created_at)
+            weeks_active = max(1, math.ceil((datetime.datetime.now() - created_dt).days / 7))
+            return weekly_premium * weeks_active
+        except ValueError:
+            pass
+
+    return weekly_premium * 12
+
+
+def compute_gps_coherence(
+    gps_lat: float,
+    gps_lon: float,
+    expected_lat: float,
+    expected_lon: float,
+    claims_last_7d: int,
+) -> dict:
+    gps_distance_km = compute_distance_km(gps_lat, gps_lon, expected_lat, expected_lon)
+
+    gps_signal = max(0.0, 1 - (gps_distance_km / 18))
+    cell_tower_signal = max(0.0, 1 - max(0.0, gps_distance_km - 0.8) / 10)
+    ip_geo_signal = max(0.0, 1 - max(0.0, gps_distance_km - 1.5) / 24)
+    heartbeat_signal = max(0.0, 0.96 - (gps_distance_km / 12) - (claims_last_7d * 0.08))
+
+    score = round(
+        min(
+            1.0,
+            max(
+                0.0,
+                (gps_signal * 0.35)
+                + (cell_tower_signal * 0.25)
+                + (ip_geo_signal * 0.2)
+                + (heartbeat_signal * 0.2),
+            ),
+        ),
+        3,
+    )
 
     return {
-        "gps_coherence_score":     score,
-        "cell_tower_aligned":      cell_tower_match,
-        "ip_geolocation_aligned":  ip_geo_match,
-        "platform_heartbeat_aligned": platform_ping_match,
-        "spoofing_detected":       score < 0.70,
-        "signals_checked":         4,
-        "method":                  "Multi-signal location coherence analysis (GPS + Cell Tower + IP Geo + Platform Heartbeat)"
+        "gps_distance_km": gps_distance_km,
+        "gps_coherence_score": score,
+        "cell_tower_aligned": cell_tower_signal >= 0.72,
+        "ip_geolocation_aligned": ip_geo_signal >= 0.68,
+        "platform_heartbeat_aligned": heartbeat_signal >= 0.72,
+        "spoofing_detected": score < 0.70,
+        "signals_checked": 4,
+        "gps_signal_strength": round(gps_signal, 3),
+        "cell_tower_signal_strength": round(cell_tower_signal, 3),
+        "ip_signal_strength": round(ip_geo_signal, 3),
+        "heartbeat_signal_strength": round(heartbeat_signal, 3),
+        "method": "Multi-signal location coherence analysis (GPS + Cell Tower + IP Geo + Platform Heartbeat)",
     }
 
 
 def fetch_historical_weather_baseline(city: str) -> dict:
-    """Historical weather baseline comparison for fake weather claim detection.
-    Fetches the 7-day historical average rainfall for the city from Open-Meteo.
-    Claims filed during clear-weather weeks are automatically flagged."""
     try:
-        geo_url = f"https://geocoding-api.open-meteo.com/v1/search?name={city}&count=1"
-        geo_resp = req_lib.get(geo_url, timeout=4)
-        geo_data = geo_resp.json()
-        if "results" not in geo_data or not geo_data["results"]:
-            return {"baseline_rain_mm": 2.0, "source": "fallback"}
-
-        lat = geo_data["results"][0]["latitude"]
-        lon = geo_data["results"][0]["longitude"]
-
-        end_date   = datetime.date.today()
-        start_date = end_date - datetime.timedelta(days=7)
+        lat, lon = resolve_city_coords(city)
+        end_date = datetime.date.today() - datetime.timedelta(days=1)
+        start_date = end_date - datetime.timedelta(days=6)
         hist_url = (
             f"https://archive-api.open-meteo.com/v1/archive"
             f"?latitude={lat}&longitude={lon}"
@@ -868,12 +991,21 @@ def fetch_historical_weather_baseline(city: str) -> dict:
             f"&daily=precipitation_sum&timezone=Asia%2FKolkata"
         )
         resp = req_lib.get(hist_url, timeout=8)
+        resp.raise_for_status()
         data = resp.json()
-        rain_values = [v for v in data.get("daily", {}).get("precipitation_sum", []) if v is not None]
+        rain_values = [float(v) for v in data.get("daily", {}).get("precipitation_sum", []) if v is not None]
         avg = round(sum(rain_values) / max(len(rain_values), 1), 2)
-        return {"baseline_rain_mm": avg, "days_sampled": len(rain_values), "source": "Open-Meteo Historical API"}
-    except Exception as e:
-        return {"baseline_rain_mm": 2.0, "days_sampled": 0, "source": f"fallback ({type(e).__name__})"}
+        return {
+            "baseline_rain_mm": avg,
+            "days_sampled": len(rain_values),
+            "source": "Open-Meteo Historical API",
+        }
+    except Exception as exc:
+        return {
+            "baseline_rain_mm": 2.0,
+            "days_sampled": 0,
+            "source": f"fallback ({type(exc).__name__})",
+        }
 
 
 @app.post("/api/claims/submit")
@@ -882,28 +1014,62 @@ def submit_claim(req: ClaimSubmitRequest):
         raise HTTPException(503, "Model not loaded")
 
     # ── Advanced Fraud Detection Layer 1: GPS Spoofing Check ────────────────────
-    gps_coherence = compute_gps_coherence(req.gps_lat, req.gps_lon)
+    # Worker-aware fraud inputs are populated below.
 
     # ── Advanced Fraud Detection Layer 2: Historical Weather Baseline ────────────
     # Find city from worker record
-    worker_city = "Chennai"
-    for user_data in db["users"].values():
-        if user_data["id"] == req.worker_id:
-            worker_city = user_data.get("city", "Chennai")
-            break
+    submitted_at = datetime.datetime.now()
+    worker = get_worker_record(req.worker_id)
+    worker_city = worker.get("city") or "Chennai"
+    worker_name = worker.get("name") or ("Karthik Selvam" if req.worker_id == "W-10442" else "Unknown")
+    worker_persona = worker.get("persona") or "food_delivery"
+    try:
+        expected_lat, expected_lon = resolve_city_coords(worker_city)
+    except Exception:
+        expected_lat, expected_lon = CITY_COORDS["Chennai"]
+    claims_last_7d = len(get_recent_claims(req.worker_id, days=7))
+
+    gps_coherence = compute_gps_coherence(
+        req.gps_lat,
+        req.gps_lon,
+        expected_lat,
+        expected_lon,
+        claims_last_7d,
+    )
+
     historical = fetch_historical_weather_baseline(worker_city)
-    baseline   = historical["baseline_rain_mm"]
+    baseline = historical["baseline_rain_mm"]
     weather_anomaly_ratio = round((req.rain_mm - baseline) / max(baseline, 0.5), 2)
-    # Claim looks suspicious if rain_mm is massively above a clear-weather baseline
-    historical_check_passed = not (req.rain_mm > 30 and baseline < 1.0)
+    historical_anomaly_flag = bool(req.rain_mm > 30 and baseline < 1.0)
+    historical_check_passed = not historical_anomaly_flag
 
     # ── Advanced Fraud Detection Layer 3: Isolation Forest ──────────────────────
-    distance = 0.5
+    duplicate_flag = estimate_duplicate_claim(req.worker_id, req.trigger_id, req.rain_mm, submitted_at)
+    cross_worker_match = estimate_cross_worker_match(worker_city, req.trigger_id, submitted_at, req.worker_id)
+    platform_logged_in = gps_coherence["platform_heartbeat_aligned"]
+    claim_hour = submitted_at.hour
+
+    fraud_req = FraudRequest(
+        gps_distance_km=gps_coherence["gps_distance_km"],
+        platform_logged_in=platform_logged_in,
+        earnings_drop_pct=req.platform_earnings_drop,
+        claims_7_days=claims_last_7d,
+        duplicate_flag=duplicate_flag,
+        cross_worker_match=cross_worker_match,
+    )
+    triggered_rules = rule_based_fraud(fraud_req)
+
     features_fraud = [[
-        distance, 1, req.platform_earnings_drop, 0, 0,
-        random.uniform(0, 0.4), random.uniform(2, 24)
+        gps_coherence["gps_distance_km"],
+        int(platform_logged_in),
+        req.platform_earnings_drop,
+        claims_last_7d,
+        int(duplicate_flag),
+        cross_worker_match,
+        claim_hour,
     ]]
-    iso_score    = m3_fraud.decision_function(features_fraud)[0]
+    iso_pred = int(m3_fraud.predict(features_fraud)[0])
+    iso_score = float(m3_fraud.decision_function(features_fraud)[0])
     anomaly_score = round(1 - (iso_score + 0.5), 3)
     anomaly_score = min(1.0, max(0.0, anomaly_score))
 
@@ -911,68 +1077,75 @@ def submit_claim(req: ClaimSubmitRequest):
     if gps_coherence["spoofing_detected"] or not historical_check_passed:
         fraud_level = "High"
         anomaly_score = max(anomaly_score, 0.86)
-    elif anomaly_score > 0.65:
-        fraud_level = "High" if anomaly_score > 0.85 else "Medium"
+    elif iso_pred == -1 or duplicate_flag or claims_last_7d > 2 or cross_worker_match >= 0.8:
+        fraud_level = "High" if anomaly_score >= 0.82 else "Medium"
+    elif anomaly_score >= 0.55:
+        fraud_level = "Medium"
     else:
         fraud_level = "Low"
 
     # ── Parametric Trigger Classification ────────────────────────────────────────
-    persona_id = PERSONA_MAP.get("food_delivery", 0)
-    now_hr  = datetime.datetime.now().hour
+    persona_id = PERSONA_MAP.get(worker_persona, PERSONA_MAP.get("food_delivery", 0))
+    now_hr = claim_hour
     is_peak = int((7 <= now_hr <= 10) or (18 <= now_hr <= 22))
     is_work = int(6 <= now_hr <= 23)
+    zone_match = int(gps_coherence["gps_distance_km"] <= 3.0)
+    zone_multiplier = float(db["policies"].get(req.worker_id, {}).get("zone_multiplier", 1.2))
     features_trigger = [[
         req.rain_mm, req.heat_c, req.strike_severity,
-        now_hr, persona_id, 1, is_peak, is_work, req.wind_kmh, req.aqi
+        now_hr, persona_id, zone_match, is_peak, is_work, req.wind_kmh, req.aqi
     ]]
     trigger_valid = bool(m4_trigger.predict(features_trigger)[0])
-    confidence    = round(float(m4_conf.predict(features_trigger)[0]), 3)
-    payout        = payout_from_trigger(req.rain_mm, req.heat_c, req.strike_severity, 1.2) if trigger_valid else 0
+    confidence = round(float(m4_conf.predict(features_trigger)[0]), 3)
+    payout = payout_from_trigger(req.rain_mm, req.heat_c, req.strike_severity, zone_multiplier) if trigger_valid else 0
     if trigger_valid:
         payout = max(100, payout)
 
     reasoning = (
-        f"SAMBAL AI assessed disruption in {worker_city}. "
-        f"GPS Coherence Score: {gps_coherence['gps_coherence_score']} ({'PASS' if not gps_coherence['spoofing_detected'] else 'FAIL — spoofing detected'}). "
-        f"Historical weather baseline: {baseline}mm avg vs {req.rain_mm}mm claimed ({'PASS' if historical_check_passed else 'FAIL — clear weather week'}). "
-        f"Isolation Forest anomaly: {anomaly_score}. "
-        f"Trigger confidence: {round(confidence*100,1)}%. Payout {'approved' if trigger_valid else 'rejected'}."
+        f"SAMBAL AI assessed disruption for {worker_name} in {worker_city}. "
+        f"GPS coherence {gps_coherence['gps_coherence_score']} across 4 signals at {gps_coherence['gps_distance_km']}km from the insured zone. "
+        f"Historical rain baseline {baseline}mm vs claimed {req.rain_mm}mm. "
+        f"Isolation Forest anomaly {anomaly_score} with {claims_last_7d} claims in 7 days and cross-worker match {cross_worker_match}. "
+        f"Trigger confidence {round(confidence * 100, 1)}%; payout {'approved' if trigger_valid and fraud_level == 'Low' else 'held for review' if fraud_level != 'Low' else 'rejected'}."
     )
 
     status = "Under Review" if fraud_level != "Low" else ("Auto-Approved" if trigger_valid else "Rejected")
 
     claim_obj = {
-        "id":                          f"CLM-{uuid.uuid4().hex[:8].upper()}",
-        "worker_id":                   req.worker_id,
-        "date":                        datetime.datetime.now().strftime("%d %b %Y"),
-        "time":                        datetime.datetime.now().strftime("%H:%M IST"),
-        "event":                       req.trigger_id,
-        "amount":                      int(payout) if trigger_valid else 0,
-        "status":                      status,
-        "fraud_risk":                  fraud_level,
-        "ai_reasoning":                reasoning,
-        "confidence":                  round(confidence * 100, 1),
-        "processing_time_ms":          random.randint(150, 450),
-        # Advanced Fraud Detection signals
-        "gps_coherence_score":         gps_coherence["gps_coherence_score"],
-        "spoofing_detected":           gps_coherence["spoofing_detected"],
-        "cell_tower_aligned":          gps_coherence["cell_tower_aligned"],
-        "ip_geolocation_aligned":      gps_coherence["ip_geolocation_aligned"],
-        "platform_heartbeat_aligned":  gps_coherence["platform_heartbeat_aligned"],
+        "id": f"CLM-{uuid.uuid4().hex[:8].upper()}",
+        "worker_id": req.worker_id,
+        "worker": worker_name,
+        "city": worker_city,
+        "date": submitted_at.strftime("%d %b %Y"),
+        "time": submitted_at.strftime("%H:%M IST"),
+        "created_at": submitted_at.isoformat(),
+        "event": req.trigger_id,
+        "rain_mm": round(req.rain_mm, 1),
+        "heat_c": round(req.heat_c, 1),
+        "strike_severity": round(req.strike_severity, 2),
+        "amount": int(payout) if trigger_valid else 0,
+        "status": status,
+        "fraud_risk": fraud_level,
+        "ai_reasoning": reasoning,
+        "confidence": round(confidence * 100, 1),
+        "processing_time_ms": random.randint(180, 420),
+        "gps_distance_km": gps_coherence["gps_distance_km"],
+        "gps_coherence_score": gps_coherence["gps_coherence_score"],
+        "spoofing_detected": gps_coherence["spoofing_detected"],
+        "cell_tower_aligned": gps_coherence["cell_tower_aligned"],
+        "ip_geolocation_aligned": gps_coherence["ip_geolocation_aligned"],
+        "platform_heartbeat_aligned": gps_coherence["platform_heartbeat_aligned"],
         "historical_rain_baseline_mm": baseline,
-        "historical_weather_check":    historical_check_passed,
-        "weather_anomaly_ratio":        weather_anomaly_ratio,
-        "isolation_forest_score":       anomaly_score,
+        "historical_weather_check": historical_check_passed,
+        "historical_anomaly_flag": historical_anomaly_flag,
+        "historical_weather_source": historical["source"],
+        "weather_anomaly_ratio": weather_anomaly_ratio,
+        "isolation_forest_score": anomaly_score,
+        "cross_worker_match": cross_worker_match,
+        "claims_last_7d": claims_last_7d,
+        "duplicate_claim_detected": duplicate_flag,
+        "triggered_rules": triggered_rules,
     }
-
-    # Enrich for Admin Feed
-    worker_name = "Unknown"
-    for user_data in db["users"].values():
-        if user_data["id"] == req.worker_id:
-            worker_name = user_data["name"]
-            break
-    claim_obj["worker"] = worker_name if worker_name != "Unknown" else ("Karthik Selvam" if req.worker_id == "W-10442" else "Unknown")
-    claim_obj["city"]   = worker_city
 
     db["claims"].insert(0, claim_obj)
     save_db(db)
@@ -990,62 +1163,88 @@ class PayoutRequest(BaseModel):
 def initiate_payout(req: PayoutRequest):
     """Razorpay Test Mode instant payout simulation.
     Creates a real Razorpay-format order object with UTR reference."""
-    order_id  = f"order_RZ{uuid.uuid4().hex[:8].upper()}"
-    utr_ref   = f"UTR{random.randint(100000000000, 999999999999)}"
-    now       = datetime.datetime.now()
-    return {
-        "payout_status":   "SUCCESS",
-        "gateway":         "Razorpay Test Mode",
-        "order_id":        order_id,
-        "utr_reference":   utr_ref,
-        "amount_inr":      req.amount,
-        "upi_id":          req.upi_id,
-        "credited_to":     "PhonePe / Paytm UPI",
-        "initiated_at":    now.strftime("%d %b %Y %H:%M:%S IST"),
-        "settled_at":      (now + datetime.timedelta(seconds=random.randint(8, 30))).strftime("%H:%M:%S IST"),
-        "claim_id":        req.claim_id,
-        "worker_id":       req.worker_id,
+    settled_at = datetime.datetime.now() + datetime.timedelta(seconds=random.randint(8, 30))
+    payout_receipt = {
+        "payout_status": "SUCCESS",
+        "display_status": "CREDITED TO BANK",
+        "gateway": "Razorpay Test Mode",
+        "order_id": f"order_RZ{uuid.uuid4().hex[:8].upper()}",
+        "utr_reference": str(random.randint(100000000000, 999999999999)),
+        "amount_inr": req.amount,
+        "upi_id": req.upi_id,
+        "credited_to": "PhonePe / Paytm UPI",
+        "initiated_at": datetime.datetime.now().strftime("%d %b %Y %H:%M:%S IST"),
+        "settled_at": settled_at.strftime("%d %b %Y %H:%M:%S IST"),
+        "claim_id": req.claim_id,
+        "worker_id": req.worker_id,
         "note":            "SAMBAL Income Protection — Disruption Payout",
-        "mode":            "UPI",
-        "processing_ms":   random.randint(200, 800),
+        "mode": "UPI",
+        "processing_ms": random.randint(200, 800),
     }
+
+    for claim in db["claims"]:
+        if claim.get("id") != req.claim_id:
+            continue
+        claim["status"] = "Credited"
+        claim["paid_at"] = settled_at.isoformat()
+        claim["payout"] = payout_receipt
+        break
+
+    worker = get_worker_record(req.worker_id)
+    if worker:
+        worker["totalPayouts"] = int(worker.get("totalPayouts", 0)) + req.amount
+
+    save_db(db)
+    return payout_receipt
 
 @app.get("/api/admin/summary")
 def admin_summary():
-    today_str   = datetime.datetime.now().strftime("%d %b %Y")
-    today_claims = [c for c in db["claims"] if c.get("date") == today_str]
-    total_payout = 142800 + sum(c.get("amount", 0) for c in today_claims)
-    total_premium_est = (12450 + len(db["policies"])) * 42  # avg ₹42/week
-    loss_ratio = round((total_payout / max(total_premium_est, 1)) * 100, 1)
+    now = datetime.datetime.now()
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    today_claims = []
+    for claim in db["claims"]:
+        claim_dt = parse_claim_datetime(claim)
+        if claim_dt and claim_dt >= today_start:
+            today_claims.append(claim)
+    active_policies = [policy for policy in db["policies"].values() if policy.get("status") == "ACTIVE"]
+    credited_claims = [claim for claim in db["claims"] if claim.get("status") == "Credited" or claim.get("payout")]
+    total_payouts = sum(int(claim.get("payout", {}).get("amount_inr", claim.get("amount", 0))) for claim in credited_claims)
+    payout_today = 0
+    for claim in credited_claims:
+        paid_at = claim.get("paid_at")
+        if not paid_at:
+            continue
+        try:
+            paid_dt = datetime.datetime.fromisoformat(paid_at)
+        except ValueError:
+            continue
+        if paid_dt >= today_start:
+            payout_today += int(claim.get("payout", {}).get("amount_inr", claim.get("amount", 0)))
+    premium_collected = sum(estimate_premium_collected(policy) for policy in active_policies)
+    recent_confidences = [float(claim.get("confidence", 0)) for claim in db["claims"][:20] if claim.get("confidence") is not None]
+    avg_confidence = round(sum(recent_confidences) / max(len(recent_confidences), 1), 1) if recent_confidences else 0.0
+    fraud_flags = len([claim for claim in db["claims"] if claim.get("fraud_risk") in {"High", "Medium"} and claim.get("status") == "Under Review"])
+    loss_ratio = round((total_payouts / max(premium_collected, 1)) * 100, 1)
     return {
-        "total_policies":  12450 + len(db["policies"]),
-        "claims_today":    84 + len(today_claims),
-        "payout_today":    total_payout,
-        "fraud_flags":     7 + len([c for c in db["claims"] if c.get("fraud_risk") == "High"]),
-        "avg_confidence":  94.2,
-        "loss_ratio":      loss_ratio,
-        "premium_collected_est": total_premium_est,
+        "total_policies": len(active_policies),
+        "claims_today": len(today_claims),
+        "payout_today": payout_today,
+        "fraud_flags": fraud_flags,
+        "avg_confidence": avg_confidence,
+        "loss_ratio": loss_ratio,
+        "premium_collected_inr": premium_collected,
+        "total_payouts_inr": total_payouts,
     }
 
 
 @app.get("/api/admin/claims-feed")
 def admin_claims_feed():
-    default_claims = [
-        {"id": "CLM-6B21", "worker": "Ramesh Kumar", "city": "Mumbai", "event": "Heavy Rain",
-         "confidence": 98.4, "amount": 1200, "fraud_risk": "Low", "status": "Paid",
-         "gps_coherence_score": 0.94, "historical_weather_check": True},
-        {"id": "CLM-9A44", "worker": "Srinivas R", "city": "Chennai", "event": "Heatwave",
-         "confidence": 85.1, "amount": 800, "fraud_risk": "Low", "status": "Paid",
-         "gps_coherence_score": 0.91, "historical_weather_check": True},
-        {"id": "CLM-1F89", "worker": "Mohd Ali", "city": "Delhi", "event": "Strike",
-         "confidence": 92.0, "amount": 1500, "fraud_risk": "Medium", "status": "Under Review",
-         "gps_coherence_score": 0.73, "historical_weather_check": True},
-        {"id": "CLM-33B2", "worker": "Kiran S", "city": "Hyderabad", "event": "Heavy Rain",
-         "confidence": 95.5, "amount": 900, "fraud_risk": "High", "status": "Under Review",
-         "gps_coherence_score": 0.61, "historical_weather_check": False, "spoofing_detected": True},
-    ]
-    all_claims = db["claims"][:10] + default_claims
-    return all_claims[:20]
+    live_claims = db["claims"][:12]
+    if len(live_claims) >= 8:
+        return live_claims
+
+    merged = live_claims + build_claim_feed_defaults()
+    return merged[:12]
 
 
 @app.get("/api/admin/predictive-forecast")
@@ -1055,8 +1254,35 @@ def predictive_forecast():
     if not AI_READY:
         raise HTTPException(503, "Model not loaded")
     try:
-        # Fetch 7-day forecast for Chennai (primary demo city)
-        lat, lon = 13.0827, 80.2707
+        active_worker_ids = {
+            worker_id
+            for worker_id, policy in db["policies"].items()
+            if policy.get("status") == "ACTIVE"
+        }
+        city_counts = {}
+        city_zone_multipliers = {}
+        city_weekly_premiums = {}
+        for user in db["users"].values():
+            worker_id = user.get("id")
+            if worker_id not in active_worker_ids:
+                continue
+            city = user.get("city") or "Chennai"
+            policy = db["policies"].get(worker_id, {})
+            city_counts[city] = city_counts.get(city, 0) + 1
+            city_zone_multipliers.setdefault(city, []).append(float(policy.get("zone_multiplier", 1.2)))
+            city_weekly_premiums.setdefault(city, []).append(int(policy.get("weekly_premium", 0)))
+
+        forecast_city = max(city_counts, key=city_counts.get) if city_counts else "Chennai"
+        lat, lon = resolve_city_coords(forecast_city)
+        covered_workers = max(city_counts.get(forecast_city, 0), 1)
+        avg_zone_multiplier = round(
+            sum(city_zone_multipliers.get(forecast_city, [1.2])) / max(len(city_zone_multipliers.get(forecast_city, [1.2])), 1),
+            2,
+        )
+        avg_weekly_premium = round(
+            sum(city_weekly_premiums.get(forecast_city, [300])) / max(len(city_weekly_premiums.get(forecast_city, [300])), 1),
+            2,
+        )
         url = (
             f"https://api.open-meteo.com/v1/forecast"
             f"?latitude={lat}&longitude={lon}"
@@ -1064,6 +1290,7 @@ def predictive_forecast():
             f"&forecast_days=7&timezone=Asia%2FKolkata"
         )
         resp = req_lib.get(url, timeout=8)
+        resp.raise_for_status()
         data = resp.json().get("daily", {})
         dates  = data.get("time", [])
         rains  = data.get("precipitation_sum", [])
@@ -1084,8 +1311,22 @@ def predictive_forecast():
             feats = [[rain, heat, 0, hour, persona_id, 1, is_peak, is_work, wind, 120.0]]
             trigger = bool(m4_trigger.predict(feats)[0])
             conf   = round(float(m4_conf.predict(feats)[0]), 3)
-            est_claims = int(conf * 320) if trigger else int(conf * 40)
-            est_payout = est_claims * 600 if trigger else est_claims * 100
+            rainfall_factor = min(1.9, 0.6 + (rain / 40))
+            heat_factor = 1.15 if heat >= 40 else 1.0
+            disruption_factor = rainfall_factor * heat_factor
+            est_claims = int(
+                max(
+                    0,
+                    round(
+                        covered_workers
+                        * (0.22 if trigger else 0.04)
+                        * max(conf, 0.18)
+                        * disruption_factor
+                    ),
+                )
+            )
+            avg_payout = payout_from_trigger(rain, heat, 0.0, avg_zone_multiplier) if trigger else max(120, int(avg_weekly_premium * 1.1))
+            est_payout = int(est_claims * max(avg_payout, 120))
             total_predicted_claims += est_claims
             total_predicted_payout += est_payout
             daily_forecasts.append({
@@ -1098,10 +1339,12 @@ def predictive_forecast():
                 "estimated_payout_inr": est_payout,
             })
 
-        overall_risk = "HIGH" if total_predicted_claims > 1000 else ("MODERATE" if total_predicted_claims > 400 else "LOW")
+        overall_risk = "HIGH" if total_predicted_claims > max(covered_workers * 1.4, 35) else ("MODERATE" if total_predicted_claims > max(covered_workers * 0.75, 18) else "LOW")
         return {
-            "forecast_city":               "Chennai (Demo)",
+            "forecast_city":               forecast_city,
             "forecast_days":               len(daily_forecasts),
+            "covered_workers":             covered_workers,
+            "avg_zone_multiplier":         avg_zone_multiplier,
             "total_predicted_claims":      total_predicted_claims,
             "total_predicted_payout_inr":  total_predicted_payout,
             "overall_risk_level":           overall_risk,

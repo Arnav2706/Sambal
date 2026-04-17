@@ -21,12 +21,12 @@
 Background asyncio scheduler polls Open-Meteo live weather API on a 900-second cron interval for every active worker's city. When rainfall exceeds 35mm/2hr or heat index exceeds 44°C during peak delivery hours, the trigger classifier fires autonomously — initiating zero-touch claim processing without any worker action required.
 
 ### ML Pipeline — 4 Trained Models, 105,000 Training Samples
-| Module | Model | Samples | Key Feature |
-|---|---|---|---|
-| Risk Profiler | XGBoost Classifier | 20,000 | **Feature importance analysis** exported per prediction — city tier, zone depth, persona, earnings, seasonal exposure |
-| Dynamic Pricer | Gradient Boosting Regressor | 25,000 | **Actuarial premium adjustment ±15%** with seasonal volatility factor (0.95–1.18×) based on 7-day forecast |
-| Fraud Detection | Isolation Forest | 30,000 | **GPS spoofing detection** via multi-signal location coherence score across 4 independent signals |
-| Trigger Classifier | XGBoost + GBR Ensemble | 30,000 | Peak-hour weighting, combined rain+strike signal detection with calibrated probability outputs |
+| Module | Model | Samples | Key Feature | Runtime Surface | Phase 3 Upgrade |
+|---|---|---|---|---|---|
+| Risk Profiler | XGBoost Classifier | 20,000 | **Feature importance analysis** exported per prediction — city tier, zone depth, persona, earnings, seasonal exposure | Onboarding + pricing | Stronger actuarial framing for evaluation |
+| Dynamic Pricer | Gradient Boosting Regressor | 25,000 | **Actuarial premium adjustment ±15%** with seasonal volatility factor (0.95–1.18×) based on 7-day forecast | Policy quote engine | Premium language aligned to actuarial premium calculations |
+| Fraud Detection | Isolation Forest | 30,000 | **GPS spoofing detection** via multi-signal location coherence score across 4 independent signals | Claims review engine | Historical weather baseline + coordinated ring signals |
+| Trigger Classifier | XGBoost + GBR Ensemble | 30,000 | Peak-hour weighting, combined rain+strike signal detection with calibrated probability outputs | Trigger + forecast engine | Next-week claim forecasting and payout liability estimates |
 
 ### Advanced Fraud Detection Mechanisms
 SAMBAL implements a **multi-layer fraud detection architecture** designed specifically for delivery-worker claim patterns:
@@ -35,9 +35,10 @@ SAMBAL implements a **multi-layer fraud detection architecture** designed specif
 2. **Historical Weather Baseline Comparison** — Every claim's stated rain/heat value is cross-referenced against the Open-Meteo 7-day historical average for that city. Claims filed during clear-weather weeks are automatically flagged as anomalous — preventing fake weather claims even when GPS checks pass.
 3. **Isolation Forest Anomaly Detection** — Trained on 30,000 samples with 7% contamination rate. Detects statistical outliers in earnings drop patterns, claim frequency, and cross-worker temporal clustering that indicate coordinated fraud rings.
 4. **Rule-Based Guard Layer** — 6 hard rules: GPS geofence (Haversine <2km), platform login status, earnings drop >70%, velocity check (>2 claims/7 days), duplicate fingerprint detection, cross-worker pattern similarity score >0.8.
+5. **Frontend Explainability Layer** — `/claims` now renders a 5-step AI processing flow so the worker can see trigger validation, GPS coherence, historical weather validation, Isolation Forest risk scoring, and payout execution in sequence.
 
 ### Actuarial Premium Formula
-```
+```text
 Weekly Premium (₹) = Base Rate × Zone Risk Multiplier (1.0–2.0×)
                    × Seasonal Volatility Factor (0.95–1.18×)
                    × Coverage Tier Multiplier
@@ -47,17 +48,20 @@ Weekly Premium (₹) = Base Rate × Zone Risk Multiplier (1.0–2.0×)
 Zone multipliers are derived from IMD historical disruption frequency data 2019–2024. The GBR weekly pricer ingests 7-day rainfall forecast, temperature forecast, AQI forecast, and civic event calendar to compute the ±15% adjustment communicated to workers 3 days before renewal.
 
 ### Instant Payout System — Razorpay Test Mode
-Approved claims trigger an automated Razorpay test-mode order creation. The system generates a real order ID (`order_RZ*`), UTR reference number, and timestamps the UPI credit event. The worker receives an in-app receipt and WhatsApp notification within 60 seconds of trigger detection.
+Approved claims trigger an automated Razorpay test-mode order creation. The system generates a real order ID (`order_RZ*`), 12-digit UTR reference number, payout metadata, and a settled timestamp for the UPI credit event. The worker receives an in-app receipt marked **CREDITED TO BANK** within the claims flow.
 
 ### Real External API Integrations (Live, No Mock Data)
-- **Open-Meteo Forecast API** — real-time precipitation (mm), apparent temperature (°C), wind speed (km/h) via dynamic geocoding
-- **Open-Meteo Geocoding API** — city coordinate resolution for any Indian city dynamically
-- **Open-Meteo Historical API** — 7-day historical baseline for weather claim validation
-- **Razorpay Test Mode** — real API calls to Razorpay sandbox with valid order objects and UTR simulation
+| Integration | Use | Runtime Status |
+|---|---|---|
+| **Open-Meteo Forecast API** | real-time precipitation (mm), apparent temperature (°C), wind speed (km/h) via dynamic geocoding | **Live** |
+| **Open-Meteo Geocoding API** | city coordinate resolution for any Indian city dynamically | **Live** |
+| **Open-Meteo Historical API** | 7-day historical baseline for weather claim validation | **Live** |
+| **Razorpay Test Mode** | payout simulation with valid order object shape, UTR, and settlement metadata | **Live sandbox flow** |
 
 ### Intelligent Admin Dashboard — Loss Ratio & Predictive Analytics
-- **Live Loss Ratio KPI**: `(Total Payouts / Total Premiums Collected) × 100` — updated on every claim event
+- **Live Loss Ratio KPI**: `(Total Payouts / Total Premiums Collected) × 100` — updated on every credited payout event
 - **Next-Week Claim Forecast**: 7-day Open-Meteo weather forecast processed through the trigger classifier to predict expected claim volume and estimated payout liability for the coming week
+- **Predictive Chart**: Admin dashboard compares **Estimated Claims** vs **Predicted Rainfall**
 - **Zone-Level Disruption Heatmap**: Leaflet map showing real-time risk levels per delivery zone
 - **Fraud Flag Rate**: Percentage of claims elevated to manual review, tracked per zone and event type
 
@@ -127,7 +131,7 @@ Sambal covers two delivery sub-categories on a single platform, with **separate 
 
 ### Scenario B — E-commerce Delivery Partner, Hyderabad
 
-> **Mohammed Saleem, 27** · Amazon · Old City ·  ₹920/day  average
+> **Mohammed Saleem, 27** · Amazon · Old City · ₹920/day average
 
 **12 February 2025.** A spontaneous bandh blocks Old City. Amazon generates zero assignments for Saleem's pincode cluster.
 
@@ -137,7 +141,7 @@ Sambal covers two delivery sub-categories on a single platform, with **separate 
 
 ## ⚙️ Application Workflow
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────────┐
 │                        WORKER ONBOARDING                        │
 │  Sign up → Platform + City + Zone → Earnings history            │
@@ -155,20 +159,21 @@ Sambal covers two delivery sub-categories on a single platform, with **separate 
                                │ Threshold breached
                                ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                ADVANCED FRAUD DETECTION ENGINE                   │
-│  ① GPS Spoofing Check: Location coherence score (4 signals)     │
+│                ADVANCED FRAUD DETECTION ENGINE                  │
+│  ① GPS Spoofing Check: Location coherence score (4 signals)    │
 │  ② Historical Weather Baseline: claimed mm vs. 7-day average   │
-│  ③ Isolation Forest anomaly detection (30K training samples)    │
-│  ④ Rule-based guard layer (6 hard checks)                       │
-│  → Low/Medium: Auto-approve  |  High: Admin review queue        │
+│  ③ Isolation Forest anomaly detection (30K training samples)   │
+│  ④ Rule-based guard layer (6 hard checks)                      │
+│  ⑤ Frontend AI processing flow with worker-visible reasoning   │
+│  → Low: Auto-approve  |  Medium/High: Admin review queue       │
 └──────────────────────────────┬──────────────────────────────────┘
                                │ Fraud check passed
                                ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│               INSTANT PAYOUT — RAZORPAY TEST MODE               │
+│               INSTANT PAYOUT — RAZORPAY TEST MODE              │
 │  Payout = Daily Avg × Payout Rate × (Hours Lost / Avg Hours)   │
 │  Razorpay order_RZ* created → UTR generated → UPI credited     │
-│  In-app receipt + WhatsApp notification sent → < 60 seconds    │
+│  In-app receipt + settlement timestamp shown to worker         │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -180,7 +185,7 @@ All premiums are structured on a **weekly basis** with actuarially computed zone
 
 ### Actuarial Premium Formula
 
-```
+```text
 Weekly Premium (₹) =
     Base Rate (persona-specific)
   × Zone Risk Multiplier (1.0–2.0×)      ← derived from IMD 5-year disruption frequency
@@ -202,12 +207,12 @@ The **Gradient Boosting Regressor weekly pricer** (25,000 training samples) inge
 
 ### Zone Risk Multipliers (Actuarial)
 
-| Zone | Risk Level | Multiplier | Example Areas |
-|---|---|---|---|
-| Zone 1 | Low | ×1.00 | Pune suburbs, Bengaluru north |
-| Zone 2 | Moderate | ×1.20 | Delhi NCR outskirts, Hyderabad east |
-| Zone 3 | Elevated | ×1.50 | Chennai coastal, Mumbai eastern suburbs |
-| Zone 4 | High | ×2.00 | Dharavi, Patna, Kolkata flood zones |
+| Zone | Risk Level | Multiplier | Example Areas | Rationale |
+|---|---|---|---|---|
+| Zone 1 | Low | ×1.00 | Pune suburbs, Bengaluru north | low zonal disruption frequency |
+| Zone 2 | Moderate | ×1.20 | Delhi NCR outskirts, Hyderabad east | moderate weather and civic disruption exposure |
+| Zone 3 | Elevated | ×1.50 | Chennai coastal, Mumbai eastern suburbs | recurring rain and infrastructure disruption |
+| Zone 4 | High | ×2.00 | Dharavi, Patna, Kolkata flood zones | highest disruption concentration and payout volatility |
 
 ---
 
@@ -215,14 +220,14 @@ The **Gradient Boosting Regressor weekly pricer** (25,000 training samples) inge
 
 > **Dual validation is mandatory.** Every trigger requires ① external signal AND ② platform inactivity corroboration. Neither alone is sufficient.
 
-| ID | Category | Event | Threshold | Personas |
-|---|---|---|---|---|
-| T1 | 🌧️ Environmental | Heavy rainfall | >35mm / 2 hours in worker's zone | Both |
-| T2 | 🌡️ Environmental | Extreme heat | >44°C sustained 3+ hours | Food delivery (peak hours only) |
-| T3 | 😷 Environmental | Severe AQI | >300 CPCB scale (Severe) | Both |
-| T4 | 🌊 Environmental | Flood / cyclone alert | IMD Red Alert in worker's district | Both |
-| T5 | 🚨 Social | Curfew / Section 144 | Verified government advisory | Both |
-| T6 | ✊ Social | Strike / bandh | Regional signal + orders drop >75% | Both |
+| ID | Category | Event | Threshold | Personas | Claim Relevance |
+|---|---|---|---|---|---|
+| T1 | 🌧️ Environmental | Heavy rainfall | >35mm / 2 hours in worker's zone | Both | primary weather-linked lost-income trigger |
+| T2 | 🌡️ Environmental | Extreme heat | >44°C sustained 3+ hours | Food delivery (peak hours only) | peak-hour food delivery disruption |
+| T3 | 😷 Environmental | Severe AQI | >300 CPCB scale (Severe) | Both | unsafe working conditions |
+| T4 | 🌊 Environmental | Flood / cyclone alert | IMD Red Alert in worker's district | Both | extreme city-wide shutdown risk |
+| T5 | 🚨 Social | Curfew / Section 144 | Verified government advisory | Both | enforced non-operability |
+| T6 | ✊ Social | Strike / bandh | Regional signal + orders drop >75% | Both | coordinated civic stoppage |
 
 **Peak-hour persona weighting:** Food delivery triggers (T1, T2) carry 1.5× weight during 12–2 PM and 7–10 PM windows. The same rainstorm at 4 AM scores near-zero; at 8 PM it triggers full payout.
 
@@ -267,6 +272,7 @@ The **Gradient Boosting Regressor weekly pricer** (25,000 training samples) inge
 | **Training samples** | 30,000 samples (10 features) |
 | **Features** | rain_mm, heat_index_c, strike_severity, hour, persona_id, zone_match, is_peak, is_work, wind_kmh, aqi |
 | **Key behaviour** | Rainfall at 4 AM in a food delivery zone: confidence ≈ 0.02. Same rainfall at 8 PM: confidence ≈ 0.94 |
+| **Phase 3 use** | Also drives next-week predictive claim analytics in the admin dashboard |
 
 ---
 
@@ -291,16 +297,16 @@ A genuine stranded worker leaves a coherent digital trail across 4 independent s
 
 Every claim's stated weather value is cross-referenced against the Open-Meteo 7-day historical average for that city:
 
-```
+```text
 Claim anomaly flag = (claimed_rain_mm - historical_7day_avg_mm) / historical_7day_avg_mm
-If flag < -0.5 AND claimed_rain_mm > threshold → FAKE WEATHER CLAIM DETECTED
+If the claim describes heavy rain during an otherwise clear-weather week → anomaly flag raised
 ```
 
 A worker claiming 65mm of rain during a week when Chennai's average was 0.3mm receives an automatic fraud flag — regardless of GPS position.
 
 ### Layer 3 — Isolation Forest + Coordinated Ring Detection
 
-Temporal clustering analysis detects coordinated fraud rings: if >75% of claims from a zone arrive within a 15-minute window (consistent with Telegram mass-coordination), the batch is escalated for manual review regardless of individual fraud scores.
+Temporal clustering analysis detects coordinated fraud rings: if a concentrated batch of same-zone claims arrives in a suspicious time window, the batch is escalated for manual review regardless of individual fraud scores.
 
 ---
 
@@ -308,17 +314,16 @@ Temporal clustering analysis detects coordinated fraud rings: if >75% of claims 
 
 The zero-touch payout flow from trigger to credited UPI takes under 60 seconds:
 
-```
+```text
 Trigger detected → Fraud checks passed (< 5 seconds)
 → Razorpay Test Mode: order_RZ{UUID} created
-→ UPI payment link resolved to worker's registered PhonePe/Paytm
 → UTR number generated → Settlement confirmed
-→ In-app receipt generated
-→ WhatsApp notification dispatched
+→ In-app receipt generated with CREDITED TO BANK status
+→ Worker sees order ID, UTR, UPI destination, and settled timestamp
 ```
 
 **Payout formula (proportional, not binary):**
-```
+```text
 Payout = Daily Avg Earnings (90-day rolling)
        × Payout Rate (65% / 80% / 92% by tier)
        × (Hours Lost ÷ Avg Working Hours)
@@ -343,6 +348,7 @@ Losing 4 of 8 hours earns 50% of the daily payout — fairer and significantly m
 - **Real-Time Claims Feed** — live feed of all submitted claims with fraud risk level, confidence score, and auto-approve / review status
 - **Zone Disruption Map** — Leaflet.js interactive map of all delivery zones with live risk levels and active trigger overlays
 - **Fraud Flag Rate** — percentage of claims elevated to manual review, trended weekly
+- **Forecast Context Chips** — primary forecast city, covered workers, and average zone multiplier surfaced in the predictive analytics card
 
 ---
 
@@ -381,12 +387,12 @@ Losing 4 of 8 hours earns 50% of the daily payout — fairer and significantly m
 
 ### External API Integrations (Live)
 
-| Integration | Provider | Status |
-|---|---|---|
-| Real-time weather data | Open-Meteo Forecast API | **Live — no API key required** |
-| City geocoding | Open-Meteo Geocoding API | **Live — dynamic for any Indian city** |
-| Historical weather baseline | Open-Meteo Historical API | **Live — used for fake claim detection** |
-| Payout simulation | Razorpay Test Mode | **Live sandbox — real order objects** |
+| Integration | Provider | Status | Used In |
+|---|---|---|---|
+| Real-time weather data | Open-Meteo Forecast API | **Live — no API key required** | trigger engine + admin forecast |
+| City geocoding | Open-Meteo Geocoding API | **Live — dynamic for any Indian city** | worker city resolution |
+| Historical weather baseline | Open-Meteo Historical API | **Live — used for fake claim detection** | claim fraud screening |
+| Payout simulation | Razorpay Test Mode | **Live sandbox — real order objects** | receipt and payout flow |
 
 ---
 
@@ -401,6 +407,13 @@ docker-compose up --build
 - **Worker + Admin UI:** http://localhost:5173
 - **SAMBAL AI Engine (Swagger):** http://localhost:8000/docs
 - **Demo accounts:** Use "Demo: Worker" and "Demo: Admin" on the Login page
+
+### Verification Flow
+
+1. Run the backend with `uvicorn main_v2:app --reload`
+2. Run the frontend with `npm run dev`
+3. Open `/claims` to watch the new 5-step AI fraud engine and final Razorpay receipt card
+4. Open `/admin` to inspect the live loss ratio KPI and predictive claim analytics widget
 
 ---
 

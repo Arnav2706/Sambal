@@ -11,7 +11,7 @@ import { useNavigate } from 'react-router-dom';
 import useStore from '../store/useStore';
 
 // ── Animated step indicator ───────────────────────────────────────────────────
-function StepRow({ icon: Icon, title, subtitle, status, color = 'blue' }) {
+function StepRow({ icon: Icon, title, subtitle, status, color = 'blue', children }) {
   const colors = {
     blue:   { ring: 'border-blue-400',   bg: 'bg-blue-50',   text: 'text-blue-600'   },
     green:  { ring: 'border-green-400',  bg: 'bg-green-50',  text: 'text-green-600'  },
@@ -40,6 +40,7 @@ function StepRow({ icon: Icon, title, subtitle, status, color = 'blue' }) {
           )}
         </div>
         {subtitle && <p className="text-xs text-slate-500 mt-0.5 leading-snug">{subtitle}</p>}
+        {children}
       </div>
     </motion.div>
   );
@@ -81,6 +82,15 @@ export default function Claims() {
   const [error, setError]           = useState(null);
   const navigate                    = useNavigate();
   const { user }                    = useStore();
+  const cityCoords                  = {
+    Mumbai: { lat: 19.076, lon: 72.8777 },
+    Delhi: { lat: 28.6139, lon: 77.209 },
+    Bangalore: { lat: 12.9716, lon: 77.5946 },
+    Chennai: { lat: 13.0827, lon: 80.2707 },
+    Hyderabad: { lat: 17.385, lon: 78.4867 },
+    Kolkata: { lat: 22.5726, lon: 88.3639 },
+    Pune: { lat: 18.5204, lon: 73.8567 },
+  };
 
   // ── Step 1 & 2: Trigger check + claim submission ──────────────────────────
   useEffect(() => {
@@ -91,6 +101,7 @@ export default function Claims() {
         const weatherRes  = await fetch(`http://127.0.0.1:8000/api/weather/${cityToFetch}`);
         const w           = await weatherRes.json();
 
+        const cityPoint = cityCoords[cityToFetch] || cityCoords.Chennai;
         const res = await fetch('http://127.0.0.1:8000/api/claims/submit', {
           method:  'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -100,8 +111,8 @@ export default function Claims() {
             rain_mm:                 w.rain_mm   || 65.4,
             heat_c:                  w.heat_index_c || 32,
             strike_severity:         0,
-            gps_lat:                 13.08,
-            gps_lon:                 80.27,
+            gps_lat:                 cityPoint.lat,
+            gps_lon:                 cityPoint.lon,
             platform_earnings_drop:  0.82,
             wind_kmh:                w.wind_kmh  || 45,
             aqi:                     w.aqi       || 180,
@@ -159,8 +170,6 @@ export default function Claims() {
   // ── Render ────────────────────────────────────────────────────────────────
   const approved  = claimResult?.status === 'Auto-Approved';
   const rejected  = claimResult?.status === 'Rejected';
-  const review    = claimResult?.status === 'Under Review';
-
   return (
     <Layout>
       <div className="max-w-2xl mx-auto w-full px-4 pt-28 pb-16">
@@ -175,9 +184,20 @@ export default function Claims() {
               <div>
                 <h1 className="text-2xl font-bold text-slate-900">AI Claim Processing</h1>
                 <p className="text-slate-500 text-sm mt-1">SAMBAL is running advanced fraud detection and parametric trigger analysis.</p>
+                <div className="flex flex-wrap gap-2 mt-4">
+                  <span className="rounded-full border border-slate-200 bg-white px-3 py-1 text-[11px] font-semibold text-slate-600 shadow-sm">
+                    5-step AI fraud engine
+                  </span>
+                  <span className="rounded-full border border-blue-200 bg-blue-50 px-3 py-1 text-[11px] font-semibold text-blue-700 shadow-sm">
+                    {`City: ${user?.city || 'Chennai'}`}
+                  </span>
+                  <span className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-[11px] font-semibold text-emerald-700 shadow-sm">
+                    Instant UPI payout simulation
+                  </span>
+                </div>
               </div>
 
-              <Card>
+              <Card className="border-slate-200 shadow-sm">
                 <CardContent className="p-6 space-y-3">
                   {/* Step 1 — always shown */}
                   <StepRow
@@ -230,8 +250,8 @@ export default function Claims() {
                     <StepRow
                       icon={CreditCard}
                       title="Step 5 — Razorpay UPI Transfer"
-                      subtitle="Initiating instant payout via Razorpay Test Mode…"
-                      status="Processing…"
+                      subtitle="Initiating instant payout via Razorpay Test Mode..."
+                      status="Processing..."
                       color="purple"
                     />
                   )}
@@ -315,7 +335,15 @@ export default function Claims() {
                           <span className="font-bold text-slate-800 text-sm">Razorpay Test Mode</span>
                         </div>
                         <span className="bg-emerald-100 text-emerald-700 text-xs font-bold px-3 py-1 rounded-full">
-                          ✓ CREDITED
+                          {payoutResult.display_status || 'CREDITED TO BANK'}
+                        </span>
+                      </div>
+                      <div className="mb-4 flex flex-wrap gap-2">
+                        <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-semibold text-slate-600">
+                          UPI settlement simulation
+                        </span>
+                        <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-[10px] font-semibold text-emerald-700">
+                          Auto-approved by AI engine
                         </span>
                       </div>
                       <div className="grid grid-cols-2 gap-y-2 text-xs">

@@ -3,27 +3,11 @@ import { Layout } from '../components/layout/Layout';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/Card';
 import { ShieldAlert, Users, TrendingUp, CheckCircle, Activity, BarChart3, AlertTriangle, Zap, CloudRain, ThermometerSun, Radio, TrendingDown } from 'lucide-react';
 import { MapContainer, TileLayer, CircleMarker, Tooltip } from 'react-leaflet';
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer, LineChart, Line, PieChart, Pie, Cell } from 'recharts';
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer, Cell } from 'recharts';
 import { Button } from '../components/ui/Button';
 import 'leaflet/dist/leaflet.css';
 
 // ── Static chart data ──────────────────────────────────────────────────────────
-const lossData = [
-  { name: 'Wk 1', premium: 4000, claims: 2400 },
-  { name: 'Wk 2', premium: 4200, claims: 1398 },
-  { name: 'Wk 3', premium: 4500, claims: 3800 },
-  { name: 'Wk 4', premium: 4800, claims: 3908 },
-  { name: 'Wk 5', premium: 5100, claims: 2800 },
-  { name: 'Wk 6', premium: 5300, claims: 1800 },
-];
-
-const pieData = [
-  { name: 'Rain', value: 400 },
-  { name: 'Heat', value: 300 },
-  { name: 'Strike', value: 300 },
-];
-const COLORS = ['#3b82f6', '#f97316', '#ef4444'];
-
 // ── Chennai zones for the city-level map ──────────────────────────────────────
 const CHENNAI_ZONES_NORMAL = [
   { name: 'Velachery', pos: [12.9816, 80.2209], color: '#f97316', level: 'Medium Risk', workers: 312, radius: 18 },
@@ -157,6 +141,17 @@ export default function Admin() {
   const kpiPayout = disrupted
     ? (summary ? summary.payout_today + simPayout : simPayout)
     : summary?.payout_today ?? '...';
+
+  const financialData = summary
+    ? [
+        { name: 'Premium', value: summary.premium_collected_inr || 0, fill: '#0d3b4a' },
+        { name: 'Payouts', value: summary.total_payouts_inr || 0, fill: '#1fbba6' },
+      ]
+    : [];
+
+  const reviewQueue = claimsFeed
+    .filter((claim) => claim.fraud_risk === 'High' || claim.fraud_risk === 'Medium')
+    .slice(0, 3);
 
   return (
     <Layout>
@@ -401,12 +396,14 @@ export default function Admin() {
               {/* Bar Chart */}
               <Card>
                 <CardHeader className="border-b border-slate-100 pb-4 flex flex-row items-center justify-between">
-                  <CardTitle className="text-sm">Weekly Loss Ratio (Target 60%)</CardTitle>
-                  <span className="text-xs font-bold text-slate-400">Current: 58.2%</span>
+                  <CardTitle className="text-sm">Live Portfolio Position</CardTitle>
+                  <span className="text-xs font-bold text-slate-400">
+                    Current: {summary ? `${summary.loss_ratio}% loss ratio` : 'Loading...'}
+                  </span>
                 </CardHeader>
                 <CardContent className="p-6 h-[280px]">
                   <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={lossData} margin={{ top: 0, right: 0, left: -20, bottom: 0 }}>
+                    <BarChart data={financialData} margin={{ top: 0, right: 0, left: -20, bottom: 0 }}>
                       <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#E2E8F0" />
                       <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#64748b' }} />
                       <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#64748b' }} />
@@ -414,8 +411,11 @@ export default function Admin() {
                         cursor={{ fill: '#f1f5f9' }}
                         contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
                       />
-                      <Bar dataKey="premium" name="Premium In" fill="#0d3b4a" radius={[4, 4, 0, 0]} />
-                      <Bar dataKey="claims" name="Claims Paid" fill="#1fbba6" radius={[4, 4, 0, 0]} />
+                      <Bar dataKey="value" name="INR" radius={[4, 4, 0, 0]}>
+                        {financialData.map((entry) => (
+                          <Cell key={entry.name} fill={entry.fill} />
+                        ))}
+                      </Bar>
                     </BarChart>
                   </ResponsiveContainer>
                 </CardContent>
@@ -534,19 +534,19 @@ export default function Admin() {
                 </CardTitle>
               </CardHeader>
               <CardContent className="p-4 space-y-4">
-                {[1, 2, 3].map((i) => (
-                  <div key={i} className="pb-4 border-b border-slate-100 last:border-0 last:pb-0">
+                {(reviewQueue.length > 0 ? reviewQueue : [{ id: 'fallback', worker: 'No flagged claims', isolation_forest_score: 0, fraud_risk: 'Low', gps_distance_km: 0, claims_last_7d: 0, cross_worker_match: 0 }]).map((claim, i) => (
+                  <div key={claim.id || i} className="pb-4 border-b border-slate-100 last:border-0 last:pb-0">
                     <div className="flex justify-between items-start mb-2">
                       <div>
-                        <span className="text-xs font-mono font-bold text-slate-700 block">W-1088{i}</span>
-                        <span className="text-[10px] text-slate-500">Anomaly Score: 0.8{i}</span>
+                        <span className="text-xs font-mono font-bold text-slate-700 block">{claim.worker || claim.worker_id || `W-1088${i}`}</span>
+                        <span className="text-[10px] text-slate-500">Anomaly Score: {(claim.isolation_forest_score ?? Number(`0.8${i}`)).toFixed(2)}</span>
                       </div>
-                      <span className="px-1.5 py-0.5 rounded text-[9px] uppercase font-bold bg-red-100 text-red-700">Flagged</span>
+                      <span className={`px-1.5 py-0.5 rounded text-[9px] uppercase font-bold ${claim.fraud_risk === 'High' ? 'bg-red-100 text-red-700' : claim.fraud_risk === 'Medium' ? 'bg-orange-100 text-orange-700' : 'bg-emerald-100 text-emerald-700'}`}>{claim.fraud_risk}</span>
                     </div>
                     <ul className="text-[10px] text-slate-600 space-y-1 mb-3">
-                      <li>• GPS Mismatch: 4.2km</li>
-                      <li>• Velocity: 3 claims in 7 days</li>
-                      <li>• Cross-worker match: 89%</li>
+                      <li>{`GPS mismatch: ${(claim.gps_distance_km ?? 0).toFixed(1)}km`}</li>
+                      <li>{`Velocity: ${claim.claims_last_7d ?? 0} claims in 7 days`}</li>
+                      <li>{`Cross-worker match: ${Math.round((claim.cross_worker_match ?? 0) * 100)}%`}</li>
                     </ul>
                     <div className="flex gap-2">
                       <Button className="w-full text-[10px] py-1 h-auto bg-emerald-600 hover:bg-emerald-700">Approve</Button>
@@ -564,7 +564,7 @@ export default function Admin() {
                   <BarChart3 className="w-4 h-4 text-primary-500" /> Predictive Claim Analytics
                 </CardTitle>
                 <p className="text-xs mt-1 text-slate-500">
-                  7-Day Forecast · Open-Meteo + XGBoost Classifier
+                  {`7-Day Forecast · ${forecast?.forecast_city || 'Primary City'} · Open-Meteo + XGBoost Classifier`}
                   {forecast && (
                     <span className={`ml-2 font-bold text-[10px] uppercase px-1.5 py-0.5 rounded ${
                       forecast.overall_risk_level === 'HIGH' ? 'bg-red-100 text-red-700'
@@ -579,6 +579,21 @@ export default function Admin() {
               <CardContent className="p-4">
                 {forecast ? (
                   <>
+                    <div className="flex flex-wrap gap-2 mb-4">
+                      <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-semibold text-slate-600">
+                        {`Forecast City: ${forecast.forecast_city || 'Chennai'}`}
+                      </span>
+                      {typeof forecast.covered_workers === 'number' && (
+                        <span className="rounded-full bg-blue-50 px-2.5 py-1 text-[10px] font-semibold text-blue-700">
+                          {`${forecast.covered_workers} covered workers`}
+                        </span>
+                      )}
+                      {typeof forecast.avg_zone_multiplier === 'number' && (
+                        <span className="rounded-full bg-orange-50 px-2.5 py-1 text-[10px] font-semibold text-orange-700">
+                          {`Avg zone multiplier ${forecast.avg_zone_multiplier}x`}
+                        </span>
+                      )}
+                    </div>
                     <div className="grid grid-cols-2 gap-3 mb-4">
                       <div className="bg-slate-50 rounded-xl p-3 text-center">
                         <p className="text-lg font-bold text-slate-900">{forecast.total_predicted_claims.toLocaleString()}</p>
