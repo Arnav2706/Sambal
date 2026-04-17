@@ -192,7 +192,12 @@ export default function SambalAI() {
     setWeatherError(false);
     setLiveWeather(null);
     try {
-      const res = await fetch(`http://127.0.0.1:8000/api/weather/${city}`);
+      const url = new URL(`http://127.0.0.1:8000/api/weather/${city}`);
+      if (gpsCoords && !formData.test_mode) {
+        url.searchParams.append('lat', gpsCoords.lat);
+        url.searchParams.append('lon', gpsCoords.lon);
+      }
+      const res = await fetch(url);
       if (!res.ok) throw new Error();
       const data = await res.json();
       setLiveWeather(data);
@@ -207,23 +212,36 @@ export default function SambalAI() {
     setLoading(true);
     setResult(null);
     try {
+      const payload = {
+        ...formData,
+        strike_severity: Number(formData.strike_severity),
+        manual_rain:     formData.test_mode ? Number(formData.manual_rain) : null,
+        manual_heat:     formData.test_mode ? Number(formData.manual_heat) : null,
+      };
+
+      // Add GPS coords for precision if available and not in manual test mode
+      if (gpsCoords && !formData.test_mode) {
+        payload.lat = gpsCoords.lat;
+        payload.lon = gpsCoords.lon;
+      }
+
       const response = await fetch('http://127.0.0.1:8000/api/live-analysis', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          ...formData,
-          strike_severity: Number(formData.strike_severity),
-          manual_rain:     formData.test_mode ? Number(formData.manual_rain) : null,
-          manual_heat:     formData.test_mode ? Number(formData.manual_heat) : null,
-        }),
+        body:    JSON.stringify(payload),
       });
-      if (!response.ok) throw new Error(`API Error: ${response.status}`);
+
+      if (!response.ok) {
+        const errorBody = await response.json().catch(() => ({}));
+        throw new Error(errorBody.detail || `Server Error: ${response.status}`);
+      }
+
       const data = await response.json();
       setTimeout(() => { setResult(data); setLoading(false); }, 1000);
     } catch (err) {
       console.error(err);
       setLoading(false);
-      alert('Failed to connect to SAMBAL AI Backend. Make sure main_v2.py is running on port 8000.');
+      alert(`Backend Error: ${err.message}\n\nCheck if the backend terminal shows any Python errors.`);
     }
   };
 
