@@ -269,13 +269,13 @@ export default function Home() {
                 </div>
               </div>
               <div className="h-40 bg-slate-200 rounded-xl overflow-hidden shadow-inner border border-slate-100">
-                <img src="https://images.unsplash.com/photo-1542385262-ceaeb4bc43ea?auto=format&fit=crop&q=80&w=600" className="w-full h-full object-cover" alt="Workers" />
+                <img src="/gig-workers.jpg" className="w-full h-full object-cover" alt="Workers" />
               </div>
               <div className="h-40 bg-slate-200 rounded-xl overflow-hidden shadow-inner border border-slate-100">
-                <img src="https://images.unsplash.com/photo-1618042164219-62c820f10723?auto=format&fit=crop&q=80&w=600" className="w-full h-full object-cover" alt="Growth" />
+                <img src="https://images.unsplash.com/photo-1551288049-bebda4e38f71?auto=format&fit=crop&q=80&w=600" className="w-full h-full object-cover" alt="Growth" />
               </div>
               <div className="h-40 bg-slate-800 rounded-xl overflow-hidden shadow-inner border border-slate-100">
-                <img src="https://images.unsplash.com/photo-1581404172836-e63b652614b6?auto=format&fit=crop&q=80&w=600" className="w-full h-full object-cover" alt="Speedometer" />
+                <img src="https://images.unsplash.com/photo-1492144534655-ae79c964c9d7?auto=format&fit=crop&q=80&w=600" className="w-full h-full object-cover" alt="Speedometer" />
               </div>
             </div>
           </motion.div>
